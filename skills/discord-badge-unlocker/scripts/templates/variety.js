@@ -4,16 +4,10 @@
 
     // @@CONFIG@@
 
-    const LOCK = NS;
     const CHANGE_MS = CONFIG.rotateMinutes * 60 * 1000; // Rich Presence switches game on this interval, in table order
-    const KEEP_ROTATING = CONFIG.keepRotating;          // false: rotation stops (store restored) once the claim finishes
-    const AUTO_CLAIM = true;
-    const BATCH_GAMES = CONFIG.batchSize;
-    const BATCH_DELAY_MS = CONFIG.delayMs;
     const STAGGER_MINUTES = 25;
     const LAUNCH_OFFSET_MS = 300;          // gap between the first heartbeat and launch_game
     const FAKE_PID = 50000;
-
 
     const CLIENT_VERSION = "1.0.9253";
     const CLIENT_BUILD_NUMBER = 594031;
@@ -23,28 +17,38 @@
         "(KHTML, like Gecko) discord/1.0.9253 Chrome/148.0.7778.280 " +
         "Electron/42.7.1 Safari/537.36";
 
-    const AUTO_CLAIM_COUNT = GAMES.length;
-
-    if (window[LOCK]) {
+    if (window[NS]) {
         console.warn(`${LABEL} Already running. To stop: window.${NS}.stop()`);
         return;
     }
-    window[LOCK] = { loading: true };
+    window[NS] = { loading: true };
 
     // Session IDs must stay unique per session; they do not change which games or hours are sent.
     const uuid = () => crypto.randomUUID();
     const isLinux = /Linux/i.test(navigator.userAgent);
     const basename = value => String(value ?? "").split(/[\\/]/).pop();
-    const b64utf8 = value => {
-        const bytes = new TextEncoder().encode(value);
+    const toBase64 = bytes => {
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
         return btoa(binary);
     };
+    const b64utf8 = value => toBase64(new TextEncoder().encode(value));
     const sha256 = async value => new Uint8Array(
         await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
     );
     const sumHours = games => games.reduce((total, game) => total + game.hours, 0);
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    // Probing Discord's modules makes some of them log warnings; keep the console quiet meanwhile.
+    function quietly(fn) {
+        const origWarn = console.warn;
+        console.warn = () => {};
+        try {
+            return fn();
+        } finally {
+            console.warn = origWarn;
+        }
+    }
 
     function getWebpackRequire() {
         if (window.Vencord?.Webpack?.wreq?.c) return window.Vencord.Webpack.wreq;
@@ -70,31 +74,19 @@
     }
 
     function findStore(exports, name) {
-        const origWarn = console.warn;
-        try {
-            console.warn = () => {};
-            return exports.find(value => {
-                try {
-                    return value && typeof value === "object" &&
-                        (value.getName?.() === name || value.__proto__?.constructor?.displayName === name);
-                } catch (_) {
-                    return false;
-                }
-            });
-        } finally {
-            console.warn = origWarn;
-        }
+        return quietly(() => exports.find(value => {
+            try {
+                return value && typeof value === "object" &&
+                    (value.getName?.() === name || value.__proto__?.constructor?.displayName === name);
+            } catch (_) {
+                return false;
+            }
+        }));
     }
 
     function findDispatcher(exports) {
-        const origWarn = console.warn;
-        try {
-            console.warn = () => {};
-            return exports.find(value => value && typeof value.dispatch === "function" &&
-                typeof value.subscribe === "function" && value._subscriptions);
-        } finally {
-            console.warn = origWarn;
-        }
+        return quietly(() => exports.find(value => value && typeof value.dispatch === "function" &&
+            typeof value.subscribe === "function" && value._subscriptions));
     }
 
     try {
@@ -115,9 +107,7 @@
                 const token = authStore?.getToken?.();
                 if (token && typeof token === "string") return token;
             } catch (_) {}
-            const origWarn = console.warn;
-            try {
-                console.warn = () => {};
+            return quietly(() => {
                 for (const exp of exports) {
                     try {
                         if (exp && typeof exp.getToken === "function" && exp.getName?.() === "AuthenticationStore") {
@@ -126,10 +116,8 @@
                         }
                     } catch (_) {}
                 }
-            } finally {
-                console.warn = origWarn;
-            }
-            return null;
+                return null;
+            });
         }
 
         function getUserId(token) {
@@ -157,15 +145,19 @@
             view.setUint32(6, 0, true);
             view.setUint32(10, 1700000000, true);
             view.setUint32(14, 50000000, true);
-            out.set(await sha256("header"), 18);
-            out.set(await sha256(MACHINE_GUID + userId), 50);
-            out.set(await sha256("sections"), 82);
-            out.set(await sha256("cert"), 114);
-            const key = await sha256(userId + "https://discord.com/careers");
+            const [header, machine, sections, cert, key] = await Promise.all([
+                sha256("header"),
+                sha256(MACHINE_GUID + userId),
+                sha256("sections"),
+                sha256("cert"),
+                sha256(userId + "https://discord.com/careers")
+            ]);
+            out.set(header, 18);
+            out.set(machine, 50);
+            out.set(sections, 82);
+            out.set(cert, 114);
             for (let i = 1; i < out.length; i++) out[i] ^= key[(i - 1) & 31];
-            let binary = "";
-            for (let i = 0; i < out.length; i++) binary += String.fromCharCode(out[i]);
-            return btoa(binary);
+            return toBase64(out);
         }
 
         function buildSuperProps(launchSignature, heartbeatSession, clientLaunchId) {
@@ -240,7 +232,6 @@
                 console.warn(`${LABEL} ${game.name} would start before ${new Date(TRACK_START_MS).toISOString().slice(0, 10)} ` +
                     `(${new Date(start).toISOString()}).`);
             }
-            const winExe = game.exe;
 
             const launchProps = {
                 client_track_timestamp: start + LAUNCH_OFFSET_MS,
@@ -263,7 +254,7 @@
                 activity_status_shared_guilds: [],
                 current_user_status: "online",
                 game_detection_enabled: true,
-                executable_path: winExe,
+                executable_path: game.exe,
                 voice_channel_id: null,
                 voice_channel_type: null,
                 voice_channel_bitrate: null,
@@ -282,56 +273,31 @@
                 client_send_timestamp: start + LAUNCH_OFFSET_MS
             };
 
-            return [
-                {
-                    type: "running_game_heartbeat",
-                    properties: {
-                        client_track_timestamp: start,
-                        client_heartbeat_session_id: heartbeatSession,
-                        event_sequence_number: nextSeq(),
-                        game_id: game.id,
-                        game_name: game.name,
-                        game_metadata: null,
-                        game_executable: winExe,
-                        game_detection_enabled: true,
-                        initial_heartbeat: true,
-                        final_heartbeat: false,
-                        game_session_id: sessionId,
-                        duration_tracked_ms: 0,
-                        rtc_connection_id: null,
-                        media_session_id: null,
-                        launch_signature: launchSignature,
-                        client_app_state: "focused",
-                        client_send_timestamp: start
-                    }
-                },
-                {
-                    type: "launch_game",
-                    properties: launchProps
-                },
-                {
-                    type: "running_game_heartbeat",
-                    properties: {
-                        client_track_timestamp: now,
-                        client_heartbeat_session_id: heartbeatSession,
-                        event_sequence_number: nextSeq(),
-                        game_id: game.id,
-                        game_name: game.name,
-                        game_metadata: null,
-                        game_executable: winExe,
-                        game_detection_enabled: true,
-                        initial_heartbeat: false,
-                        final_heartbeat: true,
-                        game_session_id: sessionId,
-                        duration_tracked_ms: durationMs,
-                        rtc_connection_id: null,
-                        media_session_id: null,
-                        launch_signature: launchSignature,
-                        client_app_state: "focused",
-                        client_send_timestamp: now
-                    }
+            // The first heartbeat opens the session at `start`, the final one closes it at `now` with the full
+            // duration. Sequence numbers follow creation order: launch_game, then the two heartbeats.
+            const heartbeat = (timestamp, final) => ({
+                type: "running_game_heartbeat",
+                properties: {
+                    client_track_timestamp: timestamp,
+                    client_heartbeat_session_id: heartbeatSession,
+                    event_sequence_number: nextSeq(),
+                    game_id: game.id,
+                    game_name: game.name,
+                    game_metadata: null,
+                    game_executable: game.exe,
+                    game_detection_enabled: true,
+                    initial_heartbeat: !final,
+                    final_heartbeat: final,
+                    game_session_id: sessionId,
+                    duration_tracked_ms: final ? durationMs : 0,
+                    rtc_connection_id: null,
+                    media_session_id: null,
+                    launch_signature: launchSignature,
+                    client_app_state: "focused",
+                    client_send_timestamp: timestamp
                 }
-            ];
+            });
+            return [heartbeat(start, false), { type: "launch_game", properties: launchProps }, heartbeat(now, true)];
         };
 
         async function postScienceEvents(events, currentAuth, retry = 0) {
@@ -355,7 +321,7 @@
                     const retryHeader = res.headers.get("retry-after");
                     const waitSec = retryHeader ? parseFloat(retryHeader) : 2.5;
                     console.warn(`${LABEL} Rate limited (429). Retrying in ${waitSec.toFixed(1)}s...`);
-                    await new Promise(r => setTimeout(r, Math.max(waitSec * 1000, 2000)));
+                    await wait(Math.max(waitSec * 1000, 2000));
                     return await postScienceEvents(events, currentAuth, retry + 1);
                 }
                 const text = await res.text().catch(() => "");
@@ -364,7 +330,7 @@
                 return false;
             } catch (err) {
                 if (retry < 2) {
-                    await new Promise(r => setTimeout(r, 1500));
+                    await wait(1500);
                     return await postScienceEvents(events, currentAuth, retry + 1);
                 }
                 throw err;
@@ -423,15 +389,12 @@
         if (original.getVisibleGame) {
             runStore.getVisibleGame = () => current ?? original.getVisibleGame.call(runStore);
         }
-        if (original.getVisibleRunningGames) {
-            runStore.getVisibleRunningGames = () => current
-                ? [...(original.getVisibleRunningGames.call(runStore) ?? []).filter(game => game?.pid !== pid), current]
-                : original.getVisibleRunningGames.call(runStore);
-        }
-        if (original.getCandidateGames) {
-            runStore.getCandidateGames = () => current
-                ? [...(original.getCandidateGames.call(runStore) ?? []).filter(game => game?.pid !== pid), current]
-                : original.getCandidateGames.call(runStore);
+        // Lists of games: the real ones (minus any stale fake) plus the current fake game.
+        for (const key of ["getVisibleRunningGames", "getCandidateGames"]) {
+            if (!original[key]) continue;
+            runStore[key] = () => current
+                ? [...(original[key].call(runStore) ?? []).filter(game => game?.pid !== pid), current]
+                : original[key].call(runStore);
         }
         if (original.getRunningDiscordApplicationIds) {
             runStore.getRunningDiscordApplicationIds = () => {
@@ -488,11 +451,7 @@
         };
 
         let isClaiming = false;
-        const claim = async (
-            count = AUTO_CLAIM_COUNT,
-            delayMs = BATCH_DELAY_MS,
-            batchSize = BATCH_GAMES
-        ) => {
+        const claim = async (count = GAMES.length, delayMs = CONFIG.delayMs, batchSize = CONFIG.batchSize) => {
             if (stopped) return 0;
             if (isClaiming) {
                 console.warn(`${LABEL} Claim already running. Please wait for the current batch to complete.`);
@@ -554,7 +513,7 @@
                         console.warn(`${LABEL} Batch starting at index ${i} failed.`);
                     }
                     if (i + batchSize < targetGames.length && !stopped) {
-                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                        await wait(delayMs);
                     }
                 }
                 console.log(`${LABEL} Finished! ${claimed}/${targetGames.length} games accepted ` +
@@ -576,7 +535,7 @@
             current = null;
             for (const [key, fn] of Object.entries(original)) runStore[key] = fn;
             dispatchRemoval(previous);
-            delete window[LOCK];
+            delete window[NS];
             console.log(`${LABEL} Stopped and store restored.`);
         };
 
@@ -586,7 +545,7 @@
         };
 
         let lastRun = null;
-        window[LOCK] = {
+        window[NS] = {
             stop,
             next,
             claim,
@@ -605,23 +564,21 @@
         scheduleNext();
         console.log(`${LABEL} ${GAMES.length} games loaded (${TOTAL_HOURS}h total).`);
         console.log(`${LABEL} To stop: window.${NS}.stop()`);
-        if (AUTO_CLAIM) {
-            console.log(`${LABEL} Auto claim: ${AUTO_CLAIM_COUNT}/${GAMES.length} games, ${TOTAL_HOURS}h total.`);
-            lastRun = claim()
-                .catch(err => {
-                    console.warn(`${LABEL} Auto claim failed: ${err.message}`);
-                    return 0;
-                })
-                .finally(() => {
-                    // A rotating Rich Presence makes Discord log real play time on top of the table.
-                    if (!KEEP_ROTATING && !stopped) {
-                        console.log(`${LABEL} Claim finished; stopping the Rich Presence rotation (KEEP_ROTATING = false).`);
-                        stop();
-                    }
-                });
-        }
+        console.log(`${LABEL} Auto claim: ${GAMES.length}/${GAMES.length} games, ${TOTAL_HOURS}h total.`);
+        lastRun = claim()
+            .catch(err => {
+                console.warn(`${LABEL} Auto claim failed: ${err.message}`);
+                return 0;
+            })
+            .finally(() => {
+                // A rotating Rich Presence makes Discord log real play time on top of the table.
+                if (!CONFIG.keepRotating && !stopped) {
+                    console.log(`${LABEL} Claim finished; stopping the Rich Presence rotation (keepRotating: false).`);
+                    stop();
+                }
+            });
     } catch (err) {
-        delete window[LOCK];
+        delete window[NS];
         console.error(LABEL, err);
     }
 })();

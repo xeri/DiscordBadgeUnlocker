@@ -8,9 +8,6 @@ export const CATALOG_SOURCES = Object.freeze([
     { id: "discord-cdn", label: "Discord CDN", url: "https://cdn.discordapp.com/detectables/games.json" }
 ]);
 
-// Top tiers from the original repo's README.
-export const TIERS = Object.freeze({ games: 100, hours: 5000 });
-
 // Every tier of the two badges, as Discord's profile badge timeline lists them. `min` unlocks the tier.
 const tierList = list => Object.freeze(list.map(([key, name, min]) => Object.freeze({ key, name, min })));
 export const BADGE_TIERS = Object.freeze({
@@ -26,18 +23,49 @@ export const BADGE_TIERS = Object.freeze({
     ])
 });
 
+// The top tiers (100 games, 5,000h), as in the original repo's README.
+export const TIERS = Object.freeze({ games: BADGE_TIERS.variety.at(-1).min, hours: BADGE_TIERS.time.at(-1).min });
+
 // The highest tier `value` games (variety) or hours (time) reaches, as an index; -1 for none.
-export function tierFor(badge, value) {
-    let index = -1;
-    BADGE_TIERS[badge].forEach((tier, i) => { if (Number(value) >= tier.min) index = i; });
-    return index;
-}
+export const tierFor = (badge, value) => BADGE_TIERS[badge].findLastIndex(tier => Number(value) >= tier.min);
 
 // What to aim for to land on a tier: its minimum plus ~10% spare, kept below the next tier.
 export function tierAim(badge, index) {
     const tiers = BADGE_TIERS[badge];
     const next = tiers[index + 1]?.min ?? Infinity;
     return Math.min(Math.ceil((tiers[index].min * 11) / 10), next - 1); // * 11 / 10, not * 1.1: 100 * 1.1 is 110.00000000000001
+}
+
+// ---------- tier maths: already played + sent ----------
+// Variety counts different games, so new games add to the ones already played. Time adds up hours.
+// A script always sends at least one game with at least 0.1h, so some tiers can no longer be hit:
+// with 19 games played, any new game makes 20 (Explorer), so Ranger is out of reach.
+
+export const minHours = games => Math.ceil(games) / 10; // every game needs at least 0.1h
+
+// New games to send so `have` + new lands on Variety tier i (aiming ~10% over its minimum); null if it can't.
+export function sendGames(i, have) {
+    const most = (BADGE_TIERS.variety[i + 1]?.min ?? Infinity) - 1 - have; // most new games that stay on tier i
+    return most < 1 ? null : Math.min(most, Math.max(1, tierAim("variety", i) - have));
+}
+
+// Hours to send with `games` new games so `have` + sent lands on Time tier i; null if it can't.
+export function sendHours(i, games, have) {
+    const tiers = BADGE_TIERS.time;
+    const p = toTenths(have);
+    const next = tiers[i + 1] ? tiers[i + 1].min * 10 : Infinity;
+    const least = Math.max(games, tiers[i].min * 10 - p); // in tenths: every game needs 0.1h
+    if (p + least >= next) return null;
+    return Math.min(Math.max(tierAim("time", i) * 10 - p, least), next - 1 - p) / 10;
+}
+
+// Tier i, or the next one up that can still be hit (variety: fitTier("variety", i, have);
+// time: fitTier("time", i, have, games)).
+export function fitTier(badge, i, have, games) {
+    const top = BADGE_TIERS[badge].length - 1;
+    const reachable = badge === "variety" ? j => sendGames(j, have) != null : j => sendHours(j, games, have) != null;
+    while (i < top && !reachable(i)) i += 1;
+    return i;
 }
 
 const HOUR_MS = 3600 * 1000;
@@ -47,7 +75,7 @@ const HOUR_MS = 3600 * 1000;
 export function normalizeText(value) {
     return String(value ?? "")
         .normalize("NFKD")
-        .replace(/[̀-ͯ]/g, "")
+        .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase()
         .replace(/[^\p{L}\p{N}]+/gu, " ")
         .trim();
@@ -118,8 +146,7 @@ export function parseCatalog(data) {
 }
 
 async function fetchJson(fetchFn, url, timeoutMs) {
-    const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
-    const response = await fetchFn(url, { signal, credentials: "omit" });
+    const response = await fetchFn(url, { signal: globalThis.AbortSignal?.timeout?.(timeoutMs), credentials: "omit" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
 }
@@ -147,17 +174,35 @@ export async function loadCatalog({ fetch: fetchFn = globalThis.fetch, snapshotU
     throw new Error(`Could not load the Discord catalog (${errors.join("; ")}).`);
 }
 
-// ---------- search ----------
+// ---------- catalog lookups + search ----------
 
-export function buildSearchIndex(games) {
-    return games.map(game => ({
-        game,
-        keys: [normalizeText(game.name), ...(game.aliases ?? []).map(normalizeText)].filter(Boolean)
-    }));
+// Lookups for a catalog array, built once (normalizeText runs once per name and alias) and cached,
+// so search, re-resolving on every edit and id lookups all stay cheap.
+const indexCache = new WeakMap();
+export function catalogIndex(games) {
+    let cached = indexCache.get(games);
+    if (!cached) {
+        const byId = new Map();
+        const byName = new Map();
+        const search = [];
+        for (const game of games) {
+            const name = normalizeText(game.name);
+            byId.set(game.id, game);
+            if (byName.has(name)) byName.get(name).push(game);
+            else byName.set(name, [game]);
+            search.push({ game, keys: [name, ...(game.aliases ?? []).map(normalizeText)].filter(Boolean) });
+        }
+        cached = { byId, byName, search };
+        indexCache.set(games, cached);
+    }
+    return cached;
 }
+
+export const buildSearchIndex = games => catalogIndex(games).search;
 
 const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
+// Ranks: 0 exact, 1 prefix, 2 word start, 3 anywhere. `boostIds` (anything with .has) breaks ties.
 export function searchCatalog(index, query, { limit = 50, boostIds = null } = {}) {
     const raw = String(query ?? "").trim();
     if (/^\d{6,}$/.test(raw)) {
@@ -165,11 +210,14 @@ export function searchCatalog(index, query, { limit = 50, boostIds = null } = {}
     }
     const q = normalizeText(raw);
     if (!q) return [];
+    const word = " " + q;
     const hits = [];
     for (const entry of index) {
         let rank = 9;
         for (const key of entry.keys) {
-            const r = key === q ? 0 : key.startsWith(q) ? 1 : (" " + key).includes(" " + q) ? 2 : key.includes(q) ? 3 : 9;
+            const at = key.indexOf(q);
+            if (at < 0) continue;
+            const r = at > 0 ? (key.includes(word) ? 2 : 3) : key.length === q.length ? 0 : 1;
             if (r < rank) rank = r;
             if (rank === 0) break;
         }
@@ -184,18 +232,16 @@ export function searchCatalog(index, query, { limit = 50, boostIds = null } = {}
 
 export const toTenths = hours => Math.round(Number(hours) * 10);
 export const roundHours = hours => toTenths(hours) / 10;
+// Exact total of rows' hours (summed in 0.1h units; missing hours count as 0).
+export const sumHours = rows => rows.reduce((sum, row) => sum + toTenths(row.hours || 0), 0) / 10;
 
-// Locale-independent "1,234.5".
+// Locale-independent "1,234" and "1,234.5".
+export const formatCount = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
 export function formatHours(hours) {
     const tenths = toTenths(hours);
-    const sign = tenths < 0 ? "-" : "";
     const abs = Math.abs(tenths);
-    const whole = String(Math.floor(abs / 10)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return `${sign}${whole}.${abs % 10}`;
-}
-
-export function formatCount(n) {
-    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `${tenths < 0 ? "-" : ""}${formatCount(Math.floor(abs / 10))}.${abs % 10}`;
 }
 
 export function trackStartMs(date) {
@@ -288,27 +334,9 @@ export function normalizeSelection(input) {
     return out;
 }
 
-// Lookup maps are cached per catalog array, so re-resolving on every edit stays cheap.
-const indexCache = new WeakMap();
-function catalogIndexes(games) {
-    let cached = indexCache.get(games);
-    if (!cached) {
-        const byId = new Map(games.map(game => [game.id, game]));
-        const byName = new Map();
-        for (const game of games) {
-            const key = normalizeText(game.name);
-            if (!byName.has(key)) byName.set(key, []);
-            byName.get(key).push(game);
-        }
-        cached = { byId, byName };
-        indexCache.set(games, cached);
-    }
-    return cached;
-}
-
 export function resolveSelection(games, selection) {
     const sel = normalizeSelection(selection);
-    const { byId, byName } = catalogIndexes(games);
+    const { byId, byName } = catalogIndex(games);
     const table = [];
     const missing = [];
     const ambiguous = [];
@@ -339,12 +367,8 @@ export function resolveSelection(games, selection) {
         seen.add(game.id);
         table.push({ id: game.id, name: game.name, exe: entry.exe || game.exe, hours });
     });
-    const sorted = table
-        .map((row, i) => ({ row, i }))
-        .sort((a, b) => b.row.hours - a.row.hours || a.i - b.i)
-        .map(item => item.row);
     return {
-        table: sorted,
+        table: table.sort((a, b) => b.hours - a.hours), // stable: equal hours keep selection order
         trackStart: sel.trackStart,
         options: sel.options ?? null,
         missing,
@@ -357,17 +381,9 @@ export function resolveSelection(games, selection) {
 
 // ---------- validation / summary ----------
 
-export function summarize(table) {
-    const tenths = table.reduce((sum, row) => sum + toTenths(row.hours), 0);
-    const totalHours = tenths / 10;
-    return {
-        games: table.length,
-        totalHours,
-        gamesProgress: Math.min(1, table.length / TIERS.games),
-        hoursProgress: Math.min(1, totalHours / TIERS.hours)
-    };
-}
+export const summarize = table => ({ games: table.length, totalHours: sumHours(table) });
 
+// warnings: [{ kind: "variety" | "time" | "window", text }]
 export function validateTable(table, { trackStart = null, now = Date.now() } = {}) {
     const errors = [];
     const warnings = [];
@@ -382,16 +398,16 @@ export function validateTable(table, { trackStart = null, now = Date.now() } = {
     }
     const { games, totalHours } = summarize(table);
     if (games && games < TIERS.games) {
-        warnings.push(`${games} games: the Game Variety badge's top tier needs ${TIERS.games}+.`);
+        warnings.push({ kind: "variety", text: `${games} games: the Game Variety badge's top tier needs ${TIERS.games}+.` });
     }
     if (totalHours > TIERS.hours) {
-        warnings.push(`${formatHours(totalHours)}h is past the ${formatCount(TIERS.hours)}h Game Time ceiling; extra hours don't raise the badge.`);
+        warnings.push({ kind: "time", text: `${formatHours(totalHours)}h is past the ${formatCount(TIERS.hours)}h Game Time ceiling; extra hours don't raise the badge.` });
     }
     if (trackStart) {
         const available = hoursSince(trackStart, now);
         if (available <= 0) errors.push(`Track-start date ${trackStart} is in the future.`);
         else if (totalHours > available) {
-            warnings.push(`${formatHours(totalHours)}h is more than the ${formatHours(Math.floor(available * 10) / 10)}h since ${trackStart}.`);
+            warnings.push({ kind: "window", text: `${formatHours(totalHours)}h is more than the ${formatHours(Math.floor(available * 10) / 10)}h since ${trackStart}.` });
         }
     }
     return { errors, warnings, ok: errors.length === 0 };
@@ -420,10 +436,12 @@ export const VIBES = Object.freeze([
         not: ["Competitive", "eSports", "MOBA", "Battle Royale", "Tactical Shooter"] }
 ]);
 
+const fits = (vibe, top) => !!vibe.tags && vibe.tags.some(tag => top.includes(tag)) && !(vibe.not ?? []).some(tag => top.includes(tag));
+
+// The vibe keys a game's tags fit ("popular" never: it has no tag filter).
 export function vibesFor(tags) {
-    const top = new Set((tags ?? []).slice(0, VIBE_TAG_DEPTH));
-    return VIBES.filter(vibe => vibe.tags && vibe.tags.some(tag => top.has(tag)) && !(vibe.not ?? []).some(tag => top.has(tag)))
-        .map(vibe => vibe.key);
+    const top = (tags ?? []).slice(0, VIBE_TAG_DEPTH);
+    return VIBES.filter(vibe => fits(vibe, top)).map(vibe => vibe.key);
 }
 
 export function parseRanking(data) {
@@ -433,8 +451,9 @@ export function parseRanking(data) {
 
 // The top `count` games for a vibe ("popular" = no filter), skipping ids already chosen.
 export function pickFromRanking(ranking, { vibe = "popular", count = 150, skipIds = null } = {}) {
-    const fits = vibe === "popular" ? () => true : game => vibesFor(game.tags).includes(vibe);
-    return ranking.games.filter(game => fits(game) && !skipIds?.has(game.id)).slice(0, Math.max(0, count));
+    const meta = VIBES.find(v => v.key === vibe);
+    const fit = vibe === "popular" ? () => true : game => !!meta && fits(meta, (game.tags ?? []).slice(0, VIBE_TAG_DEPTH));
+    return ranking.games.filter(game => fit(game) && !skipIds?.has(game.id)).slice(0, Math.max(0, count));
 }
 
 export function countByVibe(ranking) {
@@ -466,8 +485,12 @@ export function assignHours(games, { mode = "weighted", total = 5000, perGame = 
 export const ORIGINAL_MAX = Object.freeze({ games: 250, hours: 6000 });
 
 // Games with a real win32 executable (no made-up "<slug>.exe"), like the original's catalog filter.
+// Cached per catalog array: the filter runs a regex per game.
+const poolCache = new WeakMap();
 export function randomPool(games) {
-    return games.filter(game => game.exe !== slugExe(game.name));
+    let pool = poolCache.get(games);
+    if (!pool) poolCache.set(games, (pool = games.filter(game => game.exe !== slugExe(game.name))));
+    return pool;
 }
 
 // Small seeded PRNG so the same seed always gives the same games (the scripts themselves stay random-free).

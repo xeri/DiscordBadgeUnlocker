@@ -261,13 +261,19 @@ const concurrent = (await cached("steam-concurrent.json", "https://api.steampowe
 const apps = await cached("detectable-raw.json", "https://discord.com/api/v9/applications/detectable", { type: "json" });
 log(`Discord catalog: ${apps.length} apps`);
 
-// Steam rows: steamcharts first, then official-chart games steamcharts doesn't list.
+// Steam rows: steamcharts first, then official-chart games steamcharts doesn't list (best daily peak of the two charts).
 const steamRows = new Map();
 for (const row of charts) if (!steamRows.has(row.appid)) steamRows.set(row.appid, { appid: row.appid, name: row.name, score: row.hours30 / 1e6, basis: "Steam: 30-day hours" });
+const peaks = list => {
+    const byId = new Map();
+    for (const x of list) if (!byId.has(String(x.appid))) byId.set(String(x.appid), x.peak_in_game ?? 0);
+    return byId;
+};
+const peakLists = [peaks(mostPlayed), peaks(concurrent)];
 for (const r of [...mostPlayed, ...concurrent]) {
     const appid = String(r.appid);
     if (steamRows.has(appid)) continue;
-    const peak = Math.max(...[mostPlayed, concurrent].map(list => list.find(x => String(x.appid) === appid)?.peak_in_game ?? 0));
+    const peak = Math.max(...peakLists.map(list => list.get(appid) ?? 0));
     steamRows.set(appid, { appid, name: null, score: (peak * 0.7 * 720) / 1e6, basis: "Steam: daily peak × 0.7 × 720h" });
 }
 

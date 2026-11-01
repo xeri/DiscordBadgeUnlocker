@@ -63,11 +63,13 @@
     }
 
     async function fingerprintFor(userId) {
-        const header = await sha256("pe_header_" + userId);
-        const machine = await sha256(MACHINE_GUID + userId);
-        const sections = await sha256("pe_section_" + userId);
-        const certificate = await sha256("pe_cert_" + userId);
-        const mask = await sha256(userId + "https://discord.com/careers");
+        const [header, machine, sections, certificate, mask] = await Promise.all([
+            sha256("pe_header_" + userId),
+            sha256(MACHINE_GUID + userId),
+            sha256("pe_section_" + userId),
+            sha256("pe_cert_" + userId),
+            sha256(userId + "https://discord.com/careers")
+        ]);
 
         const binary = new Uint8Array(146);
         const writer = new DataView(binary.buffer);
@@ -139,51 +141,29 @@
             client_send_timestamp: now
         };
 
-        const events = [
-            {
-                type: "running_game_heartbeat",
-                properties: {
-                    client_track_timestamp: start,
-                    client_heartbeat_session_id: state.heartbeat,
-                    game_id: game.id,
-                    game_name: game.name,
-                    game_metadata: null,
-                    game_executable: game.exe,
-                    game_detection_enabled: true,
-                    initial_heartbeat: true,
-                    final_heartbeat: false,
-                    game_session_id: sessionId,
-                    duration_tracked_ms: 0,
-                    rtc_connection_id: null,
-                    media_session_id: null,
-                    launch_signature: state.signature,
-                    client_app_state: "focused",
-                    client_send_timestamp: start
-                }
-            },
-            { type: "launch_game", properties: launch },
-            {
-                type: "running_game_heartbeat",
-                properties: {
-                    client_track_timestamp: now,
-                    client_heartbeat_session_id: state.heartbeat,
-                    game_id: game.id,
-                    game_name: game.name,
-                    game_metadata: null,
-                    game_executable: game.exe,
-                    game_detection_enabled: true,
-                    initial_heartbeat: false,
-                    final_heartbeat: true,
-                    game_session_id: sessionId,
-                    duration_tracked_ms: durationMs,
-                    rtc_connection_id: null,
-                    media_session_id: null,
-                    launch_signature: state.signature,
-                    client_app_state: "focused",
-                    client_send_timestamp: now
-                }
+        // The first heartbeat opens the session at `start`, the final one closes it now with the full duration.
+        const heartbeat = (timestamp, final) => ({
+            type: "running_game_heartbeat",
+            properties: {
+                client_track_timestamp: timestamp,
+                client_heartbeat_session_id: state.heartbeat,
+                game_id: game.id,
+                game_name: game.name,
+                game_metadata: null,
+                game_executable: game.exe,
+                game_detection_enabled: true,
+                initial_heartbeat: !final,
+                final_heartbeat: final,
+                game_session_id: sessionId,
+                duration_tracked_ms: final ? durationMs : 0,
+                rtc_connection_id: null,
+                media_session_id: null,
+                launch_signature: state.signature,
+                client_app_state: "focused",
+                client_send_timestamp: timestamp
             }
-        ];
+        });
+        const events = [heartbeat(start, false), { type: "launch_game", properties: launch }, heartbeat(now, true)];
 
         for (const event of events) {
             event.properties.event_sequence_number = ++state.sequence;
@@ -192,7 +172,6 @@
     }
 
     async function getAuthContext(client) {
-        if (!client) throw new Error("Discord's internal HTTP client could not be located.");
         const response = await client.get({ url: "/users/@me", query: { with_analytics_token: true } });
         const profile = response?.body ?? {};
         const analyticsToken = profile.analytics_token;
@@ -210,6 +189,7 @@
 
     async function sendBatch(events, context) {
         if (CONFIG.dryRun) return true;
+        let status;
         try {
             // The client attaches auth and super-properties headers itself.
             const response = await context.client.post({
@@ -217,19 +197,15 @@
                 body: { token: context.analyticsToken, events }
             });
             if (response?.ok || response?.status === 200 || response?.status === 204) return true;
-            if (response?.status === 429) {
-                console.warn(`${LABEL} Rate limited; cooling down 5s.`);
-                await wait(5000);
-            }
-            return false;
+            status = response?.status;
         } catch (error) {
-            const status = error?.status ?? error?.statusCode;
-            if (status === 429) {
-                console.warn(`${LABEL} Rate limited; cooling down 5s.`);
-                await wait(5000);
-            }
-            return false;
+            status = error?.status ?? error?.statusCode;
         }
+        if (status === 429) {
+            console.warn(`${LABEL} Rate limited; cooling down 5s.`);
+            await wait(5000);
+        }
+        return false;
     }
 
     const state = {

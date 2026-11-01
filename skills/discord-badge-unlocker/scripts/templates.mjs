@@ -1,7 +1,7 @@
 // Renders the three console scripts from the two engine templates in ./templates/.
 // Output is deterministic: the same table + options always give byte-identical text.
 
-import { ORIGINAL_REPO, formatHours, toTenths, trackStartMs } from "./core.mjs";
+import { ORIGINAL_REPO, formatHours, roundHours, sumHours, trackStartMs } from "./core.mjs";
 
 export const MACHINE_GUID = "b5a79402-959c-4861-a579-2821dfbb3c2b";
 export const CLAIMED_KEY = "__discordBadgeUnlocker_claimed_ids";
@@ -13,9 +13,12 @@ export const TEMPLATE_FILES = Object.freeze({
 });
 
 export const OUTPUTS = Object.freeze([
-    { key: "main", file: "discord-badge-unlocker.js", engine: "telemetry", ns: "__discordBadgeUnlocker", label: "[Badge Unlocker]" },
-    { key: "variety", file: "multi-game-presence.js", engine: "variety", ns: "__multiGamePresence", label: "[Multi Game Presence]" },
-    { key: "gameTime", file: "game-time-presence.js", engine: "telemetry", ns: "__gameTimePresence", label: "[Game Time]" }
+    { key: "main", file: "discord-badge-unlocker.js", engine: "telemetry", ns: "__discordBadgeUnlocker", label: "[Badge Unlocker]",
+        title: "main script (Game Variety + Game Time badges)" },
+    { key: "variety", file: "multi-game-presence.js", engine: "variety", ns: "__multiGamePresence", label: "[Multi Game Presence]",
+        title: "Game Variety script with Rich Presence rotation (advanced)" },
+    { key: "gameTime", file: "game-time-presence.js", engine: "telemetry", ns: "__gameTimePresence", label: "[Game Time]",
+        title: "Game Time script (advanced)" }
 ]);
 
 export const DEFAULT_OPTIONS = Object.freeze({
@@ -47,27 +50,24 @@ export function normalizeOptions(input = {}) {
     };
 }
 
-// Template text loader: fs in Node, fetch in the browser (both relative to this module).
+// Template text loader: fs in Node, fetch in the browser (both relative to this module). Loads in parallel.
 export async function loadTemplates() {
-    const out = {};
     const isNode = typeof process !== "undefined" && !!process.versions?.node && typeof window === "undefined";
-    for (const [key, path] of Object.entries(TEMPLATE_FILES)) {
+    const readFile = isNode ? (await import("node:fs/promises")).readFile : null;
+    const load = async path => {
         const url = new URL(path, import.meta.url);
-        if (isNode) {
-            const { readFile } = await import("node:fs/promises");
-            out[key] = await readFile(url, "utf8");
-        } else {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`Template ${path}: HTTP ${response.status}`);
-            out[key] = await response.text();
-        }
-    }
-    return out;
+        if (readFile) return readFile(url, "utf8");
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Template ${path}: HTTP ${response.status}`);
+        return response.text();
+    };
+    const keys = Object.keys(TEMPLATE_FILES);
+    const texts = await Promise.all(keys.map(key => load(TEMPLATE_FILES[key])));
+    return Object.fromEntries(keys.map((key, i) => [key, texts[i]]));
 }
 
 const q = value => JSON.stringify(String(value));
-const hoursLiteral = hours => (toTenths(hours) / 10).toFixed(1);
-const totalTenths = table => table.reduce((sum, row) => sum + toTenths(row.hours), 0);
+const hoursLiteral = hours => roundHours(hours).toFixed(1);
 
 function trackStartLiteral(trackStart) {
     const ms = trackStartMs(trackStart);
@@ -78,15 +78,15 @@ function trackStartLiteral(trackStart) {
 
 // The block between the two "=====" lines is byte-identical in all three scripts.
 export function renderTableBlock(table, { trackStart = null } = {}) {
-    const tenths = totalTenths(table);
+    const total = sumHours(table);
     const rows = table.map(row =>
         `        { id: ${q(row.id)}, name: ${q(row.name)}, exe: ${q(row.exe)}, hours: ${hoursLiteral(row.hours)} }`);
     const windowNote = trackStart
         ? `Every session should start after ${trackStart} 00:00 UTC (TRACK_START_MS).`
         : "No tracking-window check (TRACK_START_MS = null).";
     return `    // ===== Game table (generated; identical in all three scripts) =====
-    // ${table.length} games, ${formatHours(tenths / 10)}h total. ${windowNote}
-    const TOTAL_HOURS = ${tenths / 10};
+    // ${table.length} games, ${formatHours(total)}h total. ${windowNote}
+    const TOTAL_HOURS = ${total};
     const EXPECTED_COUNT = ${table.length};
     const TRACK_START_MS = ${trackStartLiteral(trackStart)};
     const MACHINE_GUID = ${q(MACHINE_GUID)};
@@ -166,38 +166,21 @@ ${rows.join(",\n")}
 
 function renderConfig(output, options) {
     const config = output.engine === "variety"
-        ? [
-            `        batchSize: ${options.variety.batchSize},`,
-            `        delayMs: ${options.variety.delayMs},`,
-            `        rotateMinutes: ${options.variety.rotateMinutes},`,
-            `        keepRotating: ${options.variety.keepRotating},`,
-            `        dryRun: ${options.dryRun}`
-        ]
-        : [
-            `        batchSize: ${options.batchSize},`,
-            `        delayMs: ${options.delayMs},`,
-            `        dryRun: ${options.dryRun}`
-        ];
+        ? { ...options.variety, dryRun: options.dryRun } // batchSize, delayMs, rotateMinutes, keepRotating
+        : { batchSize: options.batchSize, delayMs: options.delayMs, dryRun: options.dryRun };
     return [
         `const NS = ${q(output.ns)};`,
         `    const LABEL = ${q(output.label)};`,
         "    const CONFIG = Object.freeze({",
-        ...config,
+        Object.entries(config).map(([key, value]) => `        ${key}: ${value}`).join(",\n"),
         "    });"
     ].join("\n");
 }
 
 function renderHeader(output, table, trackStart, options) {
     const ns = `window.${output.ns}`;
-    const total = formatHours(totalTenths(table) / 10);
-    const lines = [];
-    if (output.key === "main") {
-        lines.push("Discord Badge Unlocker: main script (Game Variety + Game Time badges)");
-    } else if (output.key === "gameTime") {
-        lines.push("Discord Badge Unlocker: Game Time script (advanced)");
-    } else {
-        lines.push("Discord Badge Unlocker: Game Variety script with Rich Presence rotation (advanced)");
-    }
+    const total = formatHours(sumHours(table));
+    const lines = [`Discord Badge Unlocker: ${output.title}`];
     lines.push(`${table.length} games, ${total}h total. ` +
         (trackStart ? `Sessions are meant to start after ${trackStart}.` : "No tracking-window check."));
     if (options.dryRun) lines.push("DRY RUN: builds every event but sends nothing.");
@@ -259,7 +242,7 @@ export function renderGamesMarkdown(table, { trackStart = null } = {}) {
     const lines = [
         "# Game table",
         "",
-        `${table.length} games · ${formatHours(totalTenths(table) / 10)}h total` +
+        `${table.length} games · ${formatHours(sumHours(table))}h total` +
             (trackStart ? ` · sessions start after ${trackStart}` : ""),
         "",
         "| # | Game | ID | Executable | Hours |",

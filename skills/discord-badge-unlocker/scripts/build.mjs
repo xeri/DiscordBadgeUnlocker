@@ -47,6 +47,11 @@ function parseArgs(argv) {
 
 const log = (...parts) => console.error(...parts);
 
+// --key value as a string (fallback when missing, empty, or given without a value).
+const str = (args, key, fallback) => (args[key] && args[key] !== true ? String(args[key]) : fallback);
+// --key value as a positive number (fallback when missing, not a number, or ≤ 0).
+const posNum = (args, key, fallback) => (Number(args[key]) > 0 ? Number(args[key]) : fallback);
+
 async function readJson(path) {
     return JSON.parse(await readFile(path, "utf8"));
 }
@@ -59,9 +64,10 @@ async function readCatalogFile(path) {
 }
 
 async function getCatalog(args) {
-    if (args.catalog && args.catalog !== true) {
-        const catalog = await readCatalogFile(args.catalog);
-        log(`Catalog: ${formatCount(catalog.games.length)} games from ${args.catalog}`);
+    const path = str(args, "catalog", null);
+    if (path) {
+        const catalog = await readCatalogFile(path);
+        log(`Catalog: ${formatCount(catalog.games.length)} games from ${path}`);
         return catalog;
     }
     try {
@@ -79,15 +85,16 @@ async function getCatalog(args) {
 
 async function cmdFetchCatalog(args) {
     const catalog = await loadCatalog();
-    const out = args.out && args.out !== true ? args.out : "catalog.min.json";
+    const out = str(args, "out", "catalog.min.json");
     await writeFile(out, serializeCatalog(catalog.games, { source: catalog.source, fetchedAt: catalog.fetchedAt }));
     log(`Wrote ${formatCount(catalog.games.length)} games from ${catalog.sourceLabel} to ${out}`);
 }
 
 async function cmdSlimCatalog(args) {
-    if (!args.in || args.in === true) throw new Error("slim-catalog needs --in <games.json>");
-    const games = normalizeCatalog(await readJson(args.in));
-    const out = args.out && args.out !== true ? args.out : "catalog.min.json";
+    const input = str(args, "in", null);
+    if (!input) throw new Error("slim-catalog needs --in <games.json>");
+    const games = normalizeCatalog(await readJson(input));
+    const out = str(args, "out", "catalog.min.json");
     await writeFile(out, serializeCatalog(games, { source: "file", fetchedAt: new Date().toISOString() }));
     log(`Wrote ${formatCount(games.length)} games to ${out}`);
 }
@@ -96,8 +103,7 @@ async function cmdSearch(args) {
     const query = args._.join(" ");
     if (!query) throw new Error("search needs a query");
     const catalog = await getCatalog(args);
-    const limit = Number(args.limit) > 0 ? Number(args.limit) : 20;
-    const results = searchCatalog(buildSearchIndex(catalog.games), query, { limit });
+    const results = searchCatalog(buildSearchIndex(catalog.games), query, { limit: posNum(args, "limit", 20) });
     if (!results.length) log(`No games match "${query}".`);
     for (const game of results) {
         const aliases = game.aliases?.length ? `  (aka ${game.aliases.join(", ")})` : "";
@@ -106,7 +112,7 @@ async function cmdSearch(args) {
 }
 
 async function readRanking(args) {
-    const path = args.ranking && args.ranking !== true ? args.ranking : REPO_RANKING;
+    const path = str(args, "ranking", REPO_RANKING);
     return { path, ranking: parseRanking(await readJson(path)) };
 }
 
@@ -117,18 +123,31 @@ async function cmdVibes(args) {
     for (const vibe of VIBES) console.log(`${vibe.key.padEnd(12)} ${String(counts[vibe.key]).padStart(4)}  ${vibe.label}: ${vibe.blurb}`);
 }
 
+// Writes a selection to --out (logging `message`), or to stdout without --out.
+async function emitSelection(args, selection, message) {
+    const text = JSON.stringify(selection, null, 2) + "\n";
+    const out = str(args, "out", null);
+    if (!out) {
+        process.stdout.write(text);
+        return;
+    }
+    await writeFile(out, text);
+    log(message(out));
+}
+
 async function cmdPick(args) {
     const { ranking } = await readRanking(args);
-    const vibe = args.vibe && args.vibe !== true ? String(args.vibe) : "popular";
+    const vibe = str(args, "vibe", "popular");
     const meta = VIBES.find(v => v.key === vibe);
     if (!meta) throw new Error(`Unknown vibe "${vibe}". Use one of: ${VIBES.map(v => v.key).join(", ")}`);
-    const mode = args.mode && args.mode !== true ? String(args.mode) : "weighted";
+    const mode = str(args, "mode", "weighted");
     if (!HOUR_MODES.includes(mode)) throw new Error(`--mode must be one of ${HOUR_MODES.join(", ")}`);
-    const top = Number(args.top) > 0 ? Math.floor(Number(args.top)) : 150;
-    const total = Number(args.total) > 0 ? Number(args.total) : 5000;
-    const perGame = Number(args.hours) > 0 ? Number(args.hours) : 1.5;
+    const top = Math.floor(posNum(args, "top", 150));
+    const total = posNum(args, "total", 5000);
+    const perGame = posNum(args, "hours", 1.5);
 
-    const base = args.add && args.add !== true ? normalizeSelection(await readJson(args.add)) : null;
+    const addPath = str(args, "add", null);
+    const base = addPath ? normalizeSelection(await readJson(addPath)) : null;
     const skipIds = new Set((base?.games ?? []).map(g => g.id).filter(Boolean));
     const picked = pickFromRanking(ranking, { vibe, count: top, skipIds });
     if (!picked.length) throw new Error("No games match.");
@@ -136,54 +155,44 @@ async function cmdPick(args) {
     const selection = {
         version: 1,
         name: base?.name ?? `Global top ${picked.length} · ${meta.label}`,
-        trackStart: args["track-start"] && args["track-start"] !== true ? String(args["track-start"]) : base?.trackStart ?? null,
+        trackStart: str(args, "track-start", base?.trackStart ?? null),
         ...(base?.options ? { options: base.options } : {}),
         games: [...(base?.games ?? []), ...games]
     };
-    const text = JSON.stringify(selection, null, 2) + "\n";
-    if (args.out && args.out !== true) {
-        await writeFile(args.out, text);
-        log(`Picked ${picked.length} ${meta.label} games (${mode}) → ${args.out} (${selection.games.length} games total)`);
-    } else {
-        process.stdout.write(text);
-    }
+    await emitSelection(args, selection,
+        out => `Picked ${picked.length} ${meta.label} games (${mode}) → ${out} (${selection.games.length} games total)`);
 }
 
 // Random games from the whole catalog, hours split evenly (like the original scripts). --max = 250 games, 6,000h.
 async function cmdRandom(args) {
     const catalog = await getCatalog(args);
-    const count = args.max ? ORIGINAL_MAX.games : Number(args.count) > 0 ? Math.floor(Number(args.count)) : 125;
-    const hours = args.max ? ORIGINAL_MAX.hours : Number(args.hours) > 0 ? Number(args.hours) : 5000;
+    const count = args.max ? ORIGINAL_MAX.games : Math.floor(posNum(args, "count", 125));
+    const hours = args.max ? ORIGINAL_MAX.hours : posNum(args, "hours", 5000);
     const seed = Number.isInteger(Number(args.seed)) && args.seed !== true ? Number(args.seed) >>> 0 : (Date.now() >>> 0);
     const picked = pickRandom(catalog.games, { count, seed });
     const games = splitEvenly(picked.map(g => ({ id: g.id, name: g.name, hours: 1 })), hours);
     const selection = { version: 1, name: `Random ${games.length} games (seed ${seed})`, trackStart: null, games };
-    const text = JSON.stringify(selection, null, 2) + "\n";
-    if (args.out && args.out !== true) {
-        await writeFile(args.out, text);
-        log(`Picked ${games.length} random games, ${formatHours(hours)}h, seed ${seed} → ${args.out}`);
-    } else {
-        process.stdout.write(text);
-    }
+    await emitSelection(args, selection, out => `Picked ${games.length} random games, ${formatHours(hours)}h, seed ${seed} → ${out}`);
 }
 
 function optionsFromArgs(base, args) {
     const o = normalizeOptions(base ?? {});
     const num = key => (args[key] !== undefined && args[key] !== true ? Number(args[key]) : undefined);
-    if (num("batch-size") !== undefined) o.batchSize = num("batch-size");
-    if (num("delay-ms") !== undefined) o.delayMs = num("delay-ms");
-    if (args["dry-run"]) o.dryRun = true;
-    if (num("variety-batch-size") !== undefined) o.variety.batchSize = num("variety-batch-size");
-    if (num("variety-delay-ms") !== undefined) o.variety.delayMs = num("variety-delay-ms");
-    if (num("rotate-minutes") !== undefined) o.variety.rotateMinutes = num("rotate-minutes");
-    if (args["keep-rotating"]) o.variety.keepRotating = true;
+    o.batchSize = num("batch-size") ?? o.batchSize;
+    o.delayMs = num("delay-ms") ?? o.delayMs;
+    o.dryRun ||= !!args["dry-run"];
+    o.variety.batchSize = num("variety-batch-size") ?? o.variety.batchSize;
+    o.variety.delayMs = num("variety-delay-ms") ?? o.variety.delayMs;
+    o.variety.rotateMinutes = num("rotate-minutes") ?? o.variety.rotateMinutes;
+    o.variety.keepRotating ||= !!args["keep-rotating"];
     return normalizeOptions(o);
 }
 
 async function cmdBuild(args) {
-    if (!args.selection || args.selection === true) throw new Error("build needs --selection <selection.json>");
-    const outDir = args.out && args.out !== true ? args.out : "out";
-    const selection = await readJson(args.selection);
+    const selectionPath = str(args, "selection", null);
+    if (!selectionPath) throw new Error("build needs --selection <selection.json>");
+    const outDir = str(args, "out", "out");
+    const selection = await readJson(selectionPath);
     const catalog = await getCatalog(args);
     const resolved = resolveSelection(catalog.games, selection);
 
@@ -193,13 +202,11 @@ async function cmdBuild(args) {
     for (const v of resolved.invalid) log(`  bad hours: games[${v.index}] ${v.name} (${v.hours})`);
     if (!resolved.ok) throw new Error("Fix the selection entries above and build again.");
 
-    let trackStart = resolved.trackStart;
-    if (args["track-start"] && args["track-start"] !== true) trackStart = String(args["track-start"]);
-    if (args["no-track-start"]) trackStart = null;
+    const trackStart = args["no-track-start"] ? null : str(args, "track-start", resolved.trackStart);
     const options = optionsFromArgs(resolved.options, args);
 
     const check = validateTable(resolved.table, { trackStart });
-    for (const warning of check.warnings) log(`  warning: ${warning}`);
+    for (const warning of check.warnings) log(`  warning: ${warning.text}`);
     if (!check.ok) {
         for (const error of check.errors) log(`  error: ${error}`);
         throw new Error("The table is not valid.");

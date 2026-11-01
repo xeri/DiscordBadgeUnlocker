@@ -4,7 +4,6 @@ import { initTips } from "./tips.js";
 
 initTips();
 
-const CORE = "../skills/discord-badge-unlocker/scripts/core.mjs";
 const SNAPSHOT_URL = new URL("../data/catalog.min.json", import.meta.url).href;
 
 const status = document.getElementById("catalog-status");
@@ -12,7 +11,7 @@ const start = document.getElementById("start");
 const button = document.getElementById("load-generator");
 const mountPoint = document.getElementById("generator");
 
-const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const fmt = n => n.toLocaleString("en-US");
 
 function setStatus(state, text, tip = "") {
     status.dataset.state = state;
@@ -20,6 +19,8 @@ function setStatus(state, text, tip = "") {
     status.querySelector(".text").textContent = text;
 }
 
+// A worker that ran and found every source down rejects with `fatal`: the main thread wouldn't do better.
+// One that couldn't start (no module workers, or its script failed to load) rejects without it.
 function loadInWorker() {
     return new Promise((resolve, reject) => {
         let worker;
@@ -32,7 +33,7 @@ function loadInWorker() {
         worker.onmessage = event => {
             worker.terminate();
             if (event.data?.ok) resolve(event.data.result);
-            else reject(new Error(event.data?.error ?? "Catalog worker failed."));
+            else reject(Object.assign(new Error(event.data?.error ?? "Catalog worker failed."), { fatal: true }));
         };
         worker.onerror = event => {
             event.preventDefault?.();
@@ -43,15 +44,10 @@ function loadInWorker() {
     });
 }
 
-async function loadOnMainThread() {
-    const { loadCatalog } = await import(CORE);
+const catalogPromise = loadInWorker().catch(async error => {
+    if (error.fatal) throw error;
+    const { loadCatalog } = await import("../skills/discord-badge-unlocker/scripts/core.mjs");
     return loadCatalog({ snapshotUrl: SNAPSHOT_URL });
-}
-
-const catalogPromise = loadInWorker().catch(async workerError => {
-    // A worker that ran and found every source down won't do better on the main thread.
-    if (/Could not load the Discord catalog/.test(workerError?.message ?? "")) throw workerError;
-    return loadOnMainThread();
 });
 
 catalogPromise.then(
