@@ -1,0 +1,15 @@
+{
+  "name": "discord-badge-unlocker",
+  "private": true,
+  "type": "module",
+  "description": "Local generator page and agent skill for Discord's Game Variety and Game Time badge scripts.",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "start": "node serve.mjs",
+    "catalog": "node skills/discord-badge-unlocker/scripts/build.mjs fetch-catalog --out data/catalog.min.json",
+    "ranking": "node tools/build-ranking.mjs",
+    "build:preset": "node skills/discord-badge-unlocker/scripts/build.mjs build --selection data/presets/example.json --catalog data/catalog.min.json --out out/example",
+    "verify": "npm run build:preset && node skills/discord-badge-unlocker/scripts/verify.mjs out/example"
+  },
+  "engines": { "node": ">=18" }
+}
