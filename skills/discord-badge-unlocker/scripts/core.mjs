@@ -11,6 +11,35 @@ export const CATALOG_SOURCES = Object.freeze([
 // Top tiers from the original repo's README.
 export const TIERS = Object.freeze({ games: 100, hours: 5000 });
 
+// Every tier of the two badges, as Discord's profile badge timeline lists them. `min` unlocks the tier.
+const tierList = list => Object.freeze(list.map(([key, name, min]) => Object.freeze({ key, name, min })));
+export const BADGE_TIERS = Object.freeze({
+    variety: tierList([
+        ["sampler", "Sampler", 2], ["dabbler", "Dabbler", 5], ["enthusiast", "Enthusiast", 10], ["ranger", "Ranger", 15],
+        ["explorer", "Explorer", 20], ["adventurer", "Adventurer", 30], ["voyager", "Voyager", 40], ["maverick", "Maverick", 60],
+        ["polymath", "Polymath", 80], ["universalist", "Universalist", 100]
+    ]),
+    time: tierList([
+        ["casual", "Casual", 1], ["recreational", "Recreational", 5], ["dedicated", "Dedicated", 20], ["committed", "Committed", 75],
+        ["serious", "Serious", 150], ["devoted", "Devoted", 300], ["seasoned", "Seasoned", 500], ["ironclad", "Ironclad", 1000],
+        ["unshakeable", "Unshakeable", 2000], ["eternal", "Eternal", 5000]
+    ])
+});
+
+// The highest tier `value` games (variety) or hours (time) reaches, as an index; -1 for none.
+export function tierFor(badge, value) {
+    let index = -1;
+    BADGE_TIERS[badge].forEach((tier, i) => { if (Number(value) >= tier.min) index = i; });
+    return index;
+}
+
+// What to aim for to land on a tier: its minimum plus ~10% spare, kept below the next tier.
+export function tierAim(badge, index) {
+    const tiers = BADGE_TIERS[badge];
+    const next = tiers[index + 1]?.min ?? Infinity;
+    return Math.min(Math.ceil((tiers[index].min * 11) / 10), next - 1); // * 11 / 10, not * 1.1: 100 * 1.1 is 110.00000000000001
+}
+
 const HOUR_MS = 3600 * 1000;
 
 // ---------- text ----------

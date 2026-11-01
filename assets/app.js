@@ -1,5 +1,9 @@
 // Boot: load Discord's catalog in the background, preload the generator when idle, mount it on click.
 
+import { initTips } from "./tips.js";
+
+initTips();
+
 const CORE = "../skills/discord-badge-unlocker/scripts/core.mjs";
 const SNAPSHOT_URL = new URL("../data/catalog.min.json", import.meta.url).href;
 
@@ -10,9 +14,9 @@ const mountPoint = document.getElementById("generator");
 
 const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-function setStatus(state, text, title = "") {
+function setStatus(state, text, tip = "") {
     status.dataset.state = state;
-    status.title = title;
+    status.dataset.tip = tip;
     status.querySelector(".text").textContent = text;
 }
 
@@ -53,8 +57,8 @@ const catalogPromise = loadInWorker().catch(async workerError => {
 catalogPromise.then(
     catalog => {
         const when = catalog.fetchedAt ? catalog.fetchedAt.slice(0, 10) : "unknown date";
-        if (catalog.live) setStatus("live", `${fmt(catalog.games.length)} games`, `Live from ${catalog.sourceLabel}`);
-        else setStatus("snapshot", `${fmt(catalog.games.length)} games · offline`, `Offline snapshot from ${when}`);
+        if (catalog.live) setStatus("live", `${fmt(catalog.games.length)} games`, `Every game Discord can detect, live from ${catalog.sourceLabel}`);
+        else setStatus("snapshot", `${fmt(catalog.games.length)} games · offline`, `Discord didn't answer, so this is the offline snapshot from ${when}`);
     },
     error => {
         setStatus("error", "Catalog unavailable", error.message);
