@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Builds data/rankings/global.json: the most-played PC games, ranked, with their top tags.
 //
-//   node tools/build-ranking.mjs [--pages 24] [--cache .cache/ranking] [--out data/rankings/global.json] [--refresh]
+//   node tools/build-ranking.mjs [--pages 40] [--cache .cache/ranking] [--out data/rankings/global.json] [--refresh]
 //
 // Score = estimated PC hours played in the last 30 days (millions).
-//   1. Steam games: steamcharts.com "hours played" (last 30 days), 24 pages = top 600 (--pages to change).
+//   1. Steam games: steamcharts.com "hours played" (last 30 days), 40 pages = top 1,000 (--pages to change).
 //      Games missing there but in Steam's official charts API get peak × 0.7 × 720h.
 //   2. Games also sold through other PC launchers (Battle.net, EA app, Epic, Xbox app, own launchers)
 //      get a launcher factor; games that aren't on Steam get a researched estimate (ADJUST below).
@@ -25,7 +25,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a, i, all) =>
 const CACHE = resolve(args.cache && args.cache !== true ? args.cache : join(ROOT, ".cache/ranking"));
 const OUT = resolve(args.out && args.out !== true ? args.out : join(ROOT, "data/rankings/global.json"));
 const REFRESH = !!args.refresh;
-const PAGES = Number(args.pages) > 0 ? Number(args.pages) : 24; // 25 games per page
+const PAGES = Number(args.pages) > 0 ? Number(args.pages) : 40; // 25 games per page
 const TOP_TAGS = 12; // tags kept per game (vibes only look at these)
 
 // ---------- curation ----------
@@ -55,6 +55,14 @@ const EXCLUDE_STEAM = new Map(Object.entries({
     // duplicates of another entry
     3564400: "Umamusume (JP client)"
 }));
+
+// Same idea by name, for games SteamSpy hasn't tagged yet. The pattern catches most idle games on its own.
+const IDLE_NAME = /\bidl(e|ing)\b|clicker|incremental/i;
+const EXCLUDE_NAMES = new Set([
+    "Chill with You: Lo-Fi Story", "Antimatter Dimensions", "Trimps", "Tap Tap Loot", "Upload Labs",
+    "Dungeon Crusher: Soul Hunters", // idle / desktop
+    "Dead or Alive Xtreme: Venus Vacation", "Being a DIK", "How to Train Your Cock", "Taimanin Squad", "Everlusting Life" // adult
+].map(normalizeText));
 
 // Tags that mark a non-game or an idle farm when they rank high on a game.
 const AUTO_EXCLUDE_TAGS = ["Utilities", "Software", "Video Production", "Audio Production",
@@ -300,6 +308,7 @@ for (const row of steamRows.values()) {
     if (EXCLUDE_STEAM.has(row.appid)) { dropped.push(`${row.name} (${EXCLUDE_STEAM.get(row.appid)})`); continue; }
     const bad = AUTO_EXCLUDE_TAGS.find(t => top.slice(0, 8).includes(t));
     if (bad) { dropped.push(`${row.name} (tag: ${bad})`); continue; }
+    if (row.name && (IDLE_NAME.test(row.name) || EXCLUDE_NAMES.has(normalizeText(row.name)))) { dropped.push(`${row.name} (name)`); continue; }
     const app = byId.get(STEAM_TO_DISCORD.get(row.appid)) ?? bySteam.get(row.appid) ?? byName.get(normalizeText(String(row.name ?? "").replace(/[™®©]/g, "")));
     if (!app) { dropped.push(`${row.name} (not in Discord's catalog)`); continue; }
     const id = String(app.id);

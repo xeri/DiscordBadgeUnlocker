@@ -24,6 +24,7 @@ All commands below run from the repo root. `$S` is `skills/discord-badge-unlocke
 ### 1. Understand the request
 Ask only what you can't infer. You need one of these:
 - **Specific games** with hours.
+- **Random**, like the original scripts: a game count and total hours, or "max" (250 games, 6,000h).
 - **A vibe and a size**, e.g. "120 cozy games". The vibes are `popular`, `competitive`, `cozy`, `adventurer`, `builder` and `friends`.
 - **An hour budget**, e.g. "the most hours possible since 2026-09-15". That budget is floor(hours from that date at 00:00 UTC to now); put the date in `trackStart`.
 
@@ -38,6 +39,12 @@ node $S/build.mjs fetch-catalog --out /tmp/catalog.json   # live from discord.co
 If Discord can't be reached, skip `--catalog` in later steps: the CLI falls back to the repo snapshot `data/catalog.min.json`. The user can also supply their own `games.json` (`slim-catalog --in games.json`).
 
 ### 3. Pick games
+- **Random, like the original scripts:** random games from the whole catalog, hours split evenly.
+  ```bash
+  node $S/build.mjs random --count 125 --hours 5000 --out selection.json
+  node $S/build.mjs random --max --out selection.json   # the original's 250 games, 6,000h
+  ```
+  Pass `--seed N` to get the same pick again.
 - **By vibe or popularity:** use the researched global ranking in `data/rankings/global.json` (most-played PC games, with Steam tags).
   ```bash
   node $S/build.mjs vibes                         # how many ranked games each vibe has

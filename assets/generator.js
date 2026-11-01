@@ -1,33 +1,35 @@
-// The generator UI. Loaded lazily (preloaded on idle) by app.js.
+// The generator UI: Random or Custom, then Advanced. Loaded lazily (preloaded on idle) by app.js.
 // All script text comes from the shared skill code, so the page and the CLI produce identical files.
 
 import {
-    TIERS, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, hoursSince,
-    normalizeSelection, parseRanking, pickFromRanking, resolveSelection, scaleTo, searchCatalog, setAllHours,
-    splitEvenly, summarize, validateTable
+    ORIGINAL_MAX, TIERS, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, hoursSince,
+    normalizeSelection, parseRanking, pickFromRanking, pickRandom, resolveSelection, scaleTo, searchCatalog,
+    splitEvenly, summarize, toTenths, validateTable
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import { loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 
 const DATA = new URL("../data/", import.meta.url);
-const STORE_KEY = "discordBadgeUnlocker:v1";
+const STORE_KEY = "discordBadgeUnlocker:v2";
+const OLD_KEY = "discordBadgeUnlocker:v1";
 
 const fetchJson = url => fetch(url).then(r => (r.ok ? r.json() : Promise.reject(new Error(`${url}: HTTP ${r.status}`))));
 
 // Start downloading everything the generator needs as soon as this module is preloaded.
 const templatesPromise = loadTemplates();
 const rankingPromise = fetchJson(new URL("rankings/global.json", DATA)).then(parseRanking);
-const presetPromise = fetchJson(new URL("presets/example.json", DATA));
-for (const p of [templatesPromise, rankingPromise, presetPromise]) p.catch(() => {});
+const examplePromise = fetchJson(new URL("presets/example.json", DATA));
+for (const p of [templatesPromise, rankingPromise, examplePromise]) p.catch(() => {});
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const num = (value, fallback) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback);
+const pos = (value, fallback) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback);
+const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
 const DEFAULT_STATE = () => ({
-    selection: { version: 1, name: null, trackStart: null, games: [] },
-    options: normalizeOptions(),
-    defaultHours: 1.5,
-    pick: { vibe: "popular", count: 150, mode: "weighted", total: 5000, each: 1.5 },
-    tab: "main"
+    mode: "random",
+    random: { count: 125, hours: 5000, seed: newSeed() },
+    custom: { name: null, vibe: "popular", top: 100, total: 5000, spread: "weighted", games: [] },
+    trackStart: null,
+    options: normalizeOptions()
 });
 
 function loadState() {
@@ -35,11 +37,19 @@ function loadState() {
     try {
         const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
         if (saved) {
-            state.selection = normalizeSelection(saved.selection ?? state.selection);
+            state.mode = saved.mode === "custom" ? "custom" : "random";
+            state.random = { ...state.random, ...(saved.random ?? {}) };
+            state.custom = { ...state.custom, ...(saved.custom ?? {}) };
+            state.custom.games = normalizeSelection({ games: state.custom.games ?? [] }).games;
+            state.trackStart = saved.trackStart ?? null;
             state.options = normalizeOptions(saved.options);
-            state.defaultHours = num(saved.defaultHours, state.defaultHours);
-            state.pick = { ...state.pick, ...(saved.pick ?? {}) };
-            if (["main", "variety", "gameTime", "options"].includes(saved.tab)) state.tab = saved.tab;
+            return state;
+        }
+        const old = JSON.parse(localStorage.getItem(OLD_KEY) || "null"); // earlier page version
+        if (old?.selection?.games?.length) {
+            const sel = normalizeSelection(old.selection);
+            Object.assign(state, { mode: "custom", trackStart: sel.trackStart, options: normalizeOptions(old.options) });
+            Object.assign(state.custom, { name: sel.name ?? null, games: sel.games, spread: "manual" });
         }
     } catch (_) {}
     return state;
@@ -54,39 +64,25 @@ function download(name, text, type = "text/javascript") {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function copyText(text, fallbackEl) {
+async function copyText(text) {
     try {
         await navigator.clipboard.writeText(text);
         return true;
     } catch (_) {
-        fallbackEl?.select();
-        return document.execCommand?.("copy") ?? false;
+        const area = Object.assign(document.createElement("textarea"), { value: text });
+        document.body.append(area);
+        area.select();
+        const ok = document.execCommand?.("copy") ?? false;
+        area.remove();
+        return ok;
     }
 }
 
-const STEPS = {
-    main: [
-        "Open the Discord desktop app, press <b>Ctrl+Shift+I</b> and pick the <b>Console</b> tab.",
-        "If it asks, type <code>allow pasting</code> and press Enter.",
-        "Paste the script and press Enter. It sends every game once, then it's done.",
-        "Badges can take 24–48h to update. Don't re-run it in the meantime."
-    ],
-    variety: [
-        "The original-style Game Variety engine: it shows each game as your activity while it claims, then stops (unless <b>Keep rotating</b> is on).",
-        "It reads your token in memory to call Discord's API, like the original script. Same paste steps as Main."
-    ],
-    gameTime: [
-        "The same engine as Main under the original <code>window.__gameTimePresence</code> name (<code>boost()</code>). Same paste steps as Main."
-    ]
-};
-
 export function mount(root, { catalogPromise }) {
-    root.innerHTML = `<div class="card"><div class="wait"><span class="spinner"></span>Waiting for Discord's catalog…</div></div>`;
+    root.innerHTML = `<div class="wait"><span class="spinner"></span>Loading Discord's catalog…</div>`;
     Promise.all([catalogPromise, templatesPromise]).then(
         ([catalog, templates]) => build(root, catalog, templates),
-        error => {
-            root.innerHTML = `<div class="card"><h2>Couldn't start the generator</h2><p class="muted">${esc(error.message)}</p></div>`;
-        }
+        error => { root.innerHTML = `<div class="wait">${esc(error.message)}</div>`; }
     );
 }
 
@@ -95,396 +91,384 @@ function build(root, catalog, templates) {
     const index = buildSearchIndex(catalog.games);
     const byId = new Map(catalog.games.map(game => [game.id, game]));
     let ranking = null;
-    let boostIds = null;
-    let latest = null; // { scripts, table, summary }
+    let scoreById = new Map();
+    let minScore = 1;
+    let latest = null;
 
     root.innerHTML = `
-<div class="card">
-  <h2>Quick pick <span class="muted" data-ref="rankMeta">Loading the global ranking…</span></h2>
-  <div class="vibes" data-ref="vibes"></div>
+<div class="seg big" role="group" aria-label="Mode">
+  <button type="button" data-mode="random">Random</button>
+  <button type="button" data-mode="custom">Custom</button>
+</div>
+
+<section class="card" data-pane="random">
+  <div class="fields">
+    <label class="field"><span>Games</span><input type="number" min="1" step="1" inputmode="numeric" data-ref="rCount"></label>
+    <label class="field"><span>Hours</span><input type="number" min="0.1" step="1" inputmode="decimal" data-ref="rHours"></label>
+  </div>
   <div class="row">
-    <label class="inline">Top <input type="number" min="1" step="1" data-ref="pickCount"></label>
-    <span class="muted small" data-ref="pickAvail"></span>
+    <button class="btn" type="button" data-action="max">Max</button>
+    <button class="btn" type="button" data-action="shuffle">Shuffle</button>
   </div>
-  <div class="row" style="margin-top:10px">
-    <div class="seg" data-ref="pickMode" role="group" aria-label="How to set hours">
-      <button type="button" data-mode="weighted" title="More popular games get more hours (by the square root of popularity)">Weighted</button>
-      <button type="button" data-mode="even">Even split</button>
-      <button type="button" data-mode="flat">Same each</button>
-    </div>
-    <label class="inline" data-ref="pickTotalWrap"><input type="number" min="0.1" step="0.1" data-ref="pickTotal"> h total</label>
-    <label class="inline" data-ref="pickEachWrap"><input type="number" min="0.1" step="0.1" data-ref="pickEach"> h each</label>
-  </div>
-  <div class="row" style="margin-top:12px">
-    <button class="btn primary" type="button" data-action="pick-replace">Replace list</button>
-    <button class="btn" type="button" data-action="pick-add">Add to list</button>
-    <span class="muted small">or</span>
-    <button class="btn ghost" type="button" data-action="preset">Example list (120 games)</button>
-  </div>
-  <p class="preview" data-ref="pickPreview"></p>
-</div>
+  <details class="peek"><summary data-ref="rSummary"></summary><ol class="peek-list" data-ref="rList"></ol></details>
+</section>
 
-<div class="card">
-  <h2>Search <span class="muted">${esc(formatCount(catalog.games.length))} games in Discord's catalog</span></h2>
+<section class="card" data-pane="custom">
+  <h3 class="cat">Games</h3>
+  <div class="chips" data-ref="vibes"></div>
   <div class="row">
-    <input type="search" placeholder="Search by name, alias or ID…" data-ref="search" style="flex:1 1 260px" autocomplete="off" aria-label="Search games">
-    <label class="inline">Adds at <input type="number" min="0.1" step="0.1" data-ref="defaultHours"> h</label>
-  </div>
-  <ul class="results" data-ref="results"></ul>
-</div>
-
-<div class="card">
-  <h2>Your list <span class="muted" data-ref="listName"></span></h2>
-  <div class="totals">
-    <div class="stat"><span class="muted small">Games · Game Variety</span><b data-ref="statGames">0</b>
-      <div class="bar" data-ref="barGames"><i></i></div><span class="muted small" data-ref="noteGames"></span></div>
-    <div class="stat"><span class="muted small">Hours · Game Time</span><b data-ref="statHours">0</b>
-      <div class="bar" data-ref="barHours"><i></i></div><span class="muted small" data-ref="noteHours"></span></div>
-  </div>
-  <ul class="notes" data-ref="notes"></ul>
-  <div class="tools">
-    <span class="group"><button class="btn small" type="button" data-action="set-all">Set all to</button><input type="number" min="0.1" step="0.1" value="1.5" data-ref="toolSetAll" aria-label="Hours per game"> h</span>
-    <span class="group"><button class="btn small" type="button" data-action="split">Split</button><input type="number" min="0.1" step="0.1" value="5000" data-ref="toolSplit" aria-label="Total hours to split"> h evenly</span>
-    <span class="group"><button class="btn small" type="button" data-action="scale">Scale to</button><input type="number" min="0.1" step="0.1" value="5000" data-ref="toolScale" aria-label="Total hours to scale to"> h</span>
-    <span class="group"><label class="inline">Played since <input type="date" data-ref="trackStart"></label>
-      <button class="btn small ghost" type="button" data-action="fill-window" title="Scale the list to every hour since that date">Fill window</button></span>
-  </div>
-  <div class="row between" style="margin-bottom:10px">
-    <div class="row">
-      <button class="btn small" type="button" data-action="export">Export JSON</button>
-      <label class="btn small">Import JSON<input type="file" accept="application/json,.json" data-ref="importFile" hidden></label>
+    <label class="inline-field">Top <input type="number" min="1" step="1" inputmode="numeric" data-ref="cTop" aria-label="How many"></label>
+    <button class="btn" type="button" data-action="add-vibe">Add</button>
+    <div class="search grow">
+      <input type="search" placeholder="Search games" autocomplete="off" data-ref="search" aria-label="Search games">
+      <ul class="menu" data-ref="results" hidden></ul>
     </div>
-    <button class="btn small danger" type="button" data-action="clear">Clear list</button>
   </div>
-  <div class="list-wrap"><table class="list">
-    <thead><tr><th>#</th><th>Game</th><th>Hours</th><th><span class="sr">Remove</span></th></tr></thead>
-    <tbody data-ref="listBody"></tbody>
-  </table></div>
-</div>
-
-<div class="card">
-  <h2>Scripts</h2>
-  <div class="tabs" role="tablist" data-ref="tabs">
-    <button type="button" role="tab" data-tab="main">Main · both badges</button>
-    <span class="sep">Advanced</span>
-    <button type="button" role="tab" data-tab="variety">Variety</button>
-    <button type="button" role="tab" data-tab="gameTime">Game Time</button>
-    <button type="button" role="tab" data-tab="options">Options</button>
-  </div>
-  ${["main", "variety", "gameTime"].map(key => `
-  <div class="pane" data-pane="${key}" role="tabpanel">
-    ${key !== "main" ? `<p class="muted small">Every script sends the same table, so run just one. They share their history, so mixing them never double-counts.</p>` : ""}
-    <ol class="steps">${STEPS[key].map(step => `<li>${step}</li>`).join("")}</ol>
-    <div class="row between" style="margin-bottom:8px">
-      <span class="mono small" data-file="${key}"></span>
-      <span class="row"><span class="toast" data-toast="${key}"></span>
-        <button class="btn small" type="button" data-copy="${key}">Copy</button>
-        <button class="btn small primary" type="button" data-download="${key}">Download</button></span>
+  <div class="list-head"><span data-ref="cCount"></span><button class="link" type="button" data-action="clear">Clear</button></div>
+  <ul class="list" data-ref="cList"></ul>
+  <h3 class="cat">Hours</h3>
+  <div class="row">
+    <div class="seg grow" role="group" aria-label="Spread" data-ref="spread">
+      <button type="button" data-spread="weighted">Weighted</button>
+      <button type="button" data-spread="even">Even</button>
+      <button type="button" data-spread="manual">Manual</button>
     </div>
-    <textarea class="out" readonly spellcheck="false" data-out="${key}" aria-label="Generated script"></textarea>
-  </div>`).join("")}
-  <div class="pane" data-pane="options" role="tabpanel">
+    <label class="inline-field"><input type="number" min="0.1" step="1" inputmode="decimal" data-ref="cTotal" aria-label="Total hours"> h</label>
+  </div>
+</section>
+
+<details class="card advanced">
+  <summary>Advanced</summary>
+  <div class="adv">
+    <div class="adv-row"><span class="label">Played since</span><input type="date" data-ref="trackStart" aria-label="Played since">
+      <button class="btn sm" type="button" data-action="use-window">Use all hours</button></div>
+    <div class="adv-row"><span class="label">List</span>
+      <button class="btn sm" type="button" data-action="example">Load example</button>
+      <button class="btn sm" type="button" data-action="export">Export</button>
+      <label class="btn sm">Import<input type="file" accept="application/json,.json" data-ref="importFile" hidden></label></div>
+    <div class="divider"></div>
     <div class="opts">
-      <fieldset><legend>Main + Game Time</legend>
-        <label>Games per batch <input type="number" min="1" max="100" data-opt="batchSize"></label>
-        <label>Delay between batches (ms) <input type="number" min="0" max="60000" data-opt="delayMs"></label>
-      </fieldset>
-      <fieldset><legend>Variety</legend>
-        <label>Games per batch <input type="number" min="1" max="50" data-opt="variety.batchSize"></label>
-        <label>Delay between batches (ms) <input type="number" min="0" max="60000" data-opt="variety.delayMs"></label>
-        <label>Minutes per game shown <input type="number" min="1" max="1440" data-opt="variety.rotateMinutes"></label>
-        <label>Keep rotating after the claim <input type="checkbox" data-opt="variety.keepRotating"></label>
-      </fieldset>
-      <fieldset><legend>All scripts</legend>
-        <label>Dry run (send nothing) <input type="checkbox" data-opt="dryRun"></label>
-        <p class="muted small" style="margin:0">Keep rotating makes Discord log real play time on top of the table. Leave it off unless you want that.</p>
-      </fieldset>
+      <label class="opt">Dry run<span class="switch"><input type="checkbox" data-opt="dryRun"><span></span></span></label>
+      <label class="opt">Keep rotating (Variety)<span class="switch"><input type="checkbox" data-opt="variety.keepRotating"><span></span></span></label>
+      <label class="opt">Batch size<input type="number" min="1" max="100" data-opt="batchSize"></label>
+      <label class="opt">Delay (ms)<input type="number" min="0" max="60000" data-opt="delayMs"></label>
+      <label class="opt">Variety batch size<input type="number" min="1" max="50" data-opt="variety.batchSize"></label>
+      <label class="opt">Variety delay (ms)<input type="number" min="0" max="60000" data-opt="variety.delayMs"></label>
+      <label class="opt">Minutes per game<input type="number" min="1" max="1440" data-opt="variety.rotateMinutes"></label>
     </div>
+    <div class="divider"></div>
+    ${[["variety", "Variety"], ["gameTime", "Game Time"]].map(([key, label]) => `
+    <div class="script-row"><div><b>${label}</b><code data-file="${key}"></code></div>
+      <div class="actions"><button class="btn sm" type="button" data-copy="${key}">Copy</button><button class="btn sm" type="button" data-download="${key}">Download</button></div></div>`).join("")}
+    <details class="peek"><summary>Preview</summary><textarea class="preview" readonly spellcheck="false" data-ref="preview" aria-label="Main script"></textarea></details>
   </div>
+</details>
+
+<ul class="notes" data-ref="notes"></ul>
+
+<div class="dock">
+  <div class="sum"><span><b data-ref="sumGames">0</b> games</span><span>·</span><span><b data-ref="sumHours">0</b>h</span>
+    <span class="tier" data-ref="tierGames">Variety</span><span class="tier" data-ref="tierHours">Time</span></div>
+  <div class="actions">
+    <button class="btn" type="button" data-download="main">Download</button>
+    <button class="btn primary" type="button" data-copy="main">Copy script</button>
+  </div>
+  <div class="toast" data-ref="toast" hidden></div>
 </div>`;
 
     const $ = name => root.querySelector(`[data-ref="${name}"]`);
-    const save = () => {
-        try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (_) {}
-    };
+    const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (_) {} };
 
-    // ---------- quick pick ----------
+    // ---------- hours ----------
+
+    let spreadError = null;
+    function respread() {
+        spreadError = null;
+        const c = state.custom;
+        if (c.spread === "manual" || !c.games.length) return;
+        try {
+            const scored = c.games.map(g => ({ ...g, score: scoreById.get(g.id) ?? minScore }));
+            const out = assignHours(scored, { mode: c.spread === "weighted" ? "weighted" : "even", total: pos(c.total, 5000) });
+            c.games.forEach((g, i) => { g.hours = out[i].hours; });
+        } catch (error) {
+            spreadError = error.message;
+        }
+    }
+
+    let randomCache = null;
+    function randomGames() {
+        const { count, seed } = state.random;
+        const key = `${count}:${seed}`;
+        if (randomCache?.key !== key) randomCache = { key, games: pickRandom(catalog.games, { count: pos(count, 125), seed }) };
+        return randomCache.games;
+    }
+
+    function currentSelection() {
+        if (state.mode === "random") {
+            const picked = randomGames();
+            const games = splitEvenly(picked.map(g => ({ id: g.id, name: g.name, hours: 1 })), pos(state.random.hours, 5000));
+            return { version: 1, name: `Random ${games.length} games`, trackStart: state.trackStart, games };
+        }
+        return { version: 1, name: state.custom.name, trackStart: state.trackStart, games: state.custom.games };
+    }
+
+    // ---------- render ----------
+
+    function renderMode() {
+        for (const b of root.querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
+        for (const p of root.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== state.mode;
+    }
+
+    function renderRandom() {
+        const r = state.random;
+        $("rCount").value = r.count;
+        $("rHours").value = r.hours;
+        const picked = randomGames();
+        const each = picked.length ? Math.round((pos(r.hours, 5000) / picked.length) * 10) / 10 : 0;
+        $("rSummary").textContent = `${formatCount(picked.length)} games · ${formatHours(each)}h each`;
+        $("rList").innerHTML = picked.slice(0, 500).map(g => `<li>${esc(g.name)}</li>`).join("");
+        root.querySelector('[data-action="max"]').classList.toggle("primary",
+            Number(r.count) === ORIGINAL_MAX.games && Number(r.hours) === ORIGINAL_MAX.hours);
+    }
 
     function renderVibes() {
         const counts = ranking ? countByVibe(ranking) : null;
-        $("vibes").innerHTML = VIBES.map(vibe => `
-<button type="button" class="vibe" data-vibe="${vibe.key}" aria-pressed="${state.pick.vibe === vibe.key}">
-  <strong>${esc(vibe.label)}${counts ? ` <span class="muted" style="display:inline">${counts[vibe.key]}</span>` : ""}</strong>
-  <span>${esc(vibe.blurb)}</span>
-</button>`).join("");
+        $("vibes").innerHTML = VIBES.map(v => `<button type="button" class="chip" data-vibe="${v.key}" aria-pressed="${state.custom.vibe === v.key}" title="${esc(v.blurb)}">${esc(v.label)}${counts ? `<small>${counts[v.key]}</small>` : ""}</button>`).join("");
     }
 
-    function currentPick({ add = false } = {}) {
-        if (!ranking) return [];
-        const skipIds = add ? new Set(state.selection.games.map(g => g.id).filter(Boolean)) : null;
-        return pickFromRanking(ranking, { vibe: state.pick.vibe, count: Math.floor(num(state.pick.count, 150)), skipIds });
+    function renderCustom() {
+        const c = state.custom;
+        $("cTop").value = c.top;
+        for (const b of root.querySelectorAll("[data-vibe]")) b.setAttribute("aria-pressed", String(b.dataset.vibe === c.vibe));
+        for (const b of $("spread").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.spread === c.spread));
+        const manual = c.spread === "manual";
+        const sum = c.games.reduce((t, g) => t + toTenths(g.hours || 0), 0) / 10;
+        $("cTotal").disabled = manual;
+        $("cTotal").value = manual ? sum : c.total;
+        $("cCount").textContent = `${formatCount(c.games.length)} games`;
+        root.querySelector('[data-action="clear"]').hidden = !c.games.length;
+        $("cList").innerHTML = c.games.map((g, i) => `
+<li><span class="name">${esc(g.name ?? byId.get(g.id)?.name ?? g.id)}</span>
+${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g.hours)}" data-hours="${i}" aria-label="Hours">`
+        : `<span class="hrs-val">${formatHours(g.hours || 0)}h</span>`}
+<button class="icon-btn" type="button" data-remove="${i}" aria-label="Remove">×</button></li>`).join("");
     }
 
-    function renderPick() {
-        $("pickCount").value = state.pick.count;
-        $("pickTotal").value = state.pick.total;
-        $("pickEach").value = state.pick.each;
-        for (const b of $("pickMode").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.pick.mode));
-        $("pickTotalWrap").hidden = state.pick.mode === "flat";
-        $("pickEachWrap").hidden = state.pick.mode !== "flat";
-        for (const b of $("vibes").querySelectorAll(".vibe")) b.setAttribute("aria-pressed", String(b.dataset.vibe === state.pick.vibe));
-        if (!ranking) return;
-        const available = countByVibe(ranking)[state.pick.vibe];
-        $("pickCount").max = available;
-        $("pickAvail").textContent = `of ${available} ranked games`;
-        const picked = currentPick();
-        const names = picked.slice(0, 8).map(g => g.name).join(", ");
-        $("pickPreview").textContent = picked.length
-            ? `${names}${picked.length > 8 ? ` … and ${picked.length - 8} more` : ""}`
-            : "No games match.";
-    }
-
-    function applyPick(add) {
-        const picked = currentPick({ add });
-        if (!picked.length) return;
-        let games;
-        try {
-            games = assignHours(picked, { mode: state.pick.mode, total: num(state.pick.total, 5000), perGame: num(state.pick.each, 1.5) });
-        } catch (error) {
-            alert(error.message);
-            return;
-        }
-        const entries = games.map(g => ({ id: g.id, name: g.name, hours: g.hours, exe: g.exe }));
-        const vibe = VIBES.find(v => v.key === state.pick.vibe);
-        if (add) {
-            state.selection.games.push(...entries);
-        } else {
-            state.selection = { ...state.selection, name: `Global top ${entries.length} · ${vibe.label}`, games: entries };
-        }
-        changed({ list: true });
-    }
-
-    rankingPromise.then(data => {
-        ranking = data;
-        boostIds = new Set(ranking.games.slice(0, 300).map(g => g.id));
-        $("rankMeta").textContent = `${ranking.games.length} most-played PC games · updated ${ranking.updated}`;
-        renderVibes();
-        renderPick();
-    }, error => {
-        $("rankMeta").textContent = `Ranking unavailable (${error.message})`;
-    });
-
-    // ---------- search ----------
-
-    let searchTimer = null;
-    function renderResults() {
-        const q = $("search").value;
-        const results = q.trim() ? searchCatalog(index, q, { limit: 20, boostIds }) : [];
-        const chosen = new Set(state.selection.games.map(g => g.id));
-        $("results").innerHTML = results.map(game => `
-<li><span class="name">${esc(game.name)}<span class="id">${esc(game.id)}</span></span>
-${chosen.has(game.id) ? `<span class="added">Added</span>` : `<button class="btn small" type="button" data-add="${esc(game.id)}">Add</button>`}</li>`).join("")
-            || (q.trim() ? `<li class="muted">No games match.</li>` : "");
-    }
-
-    function addGame(id) {
-        const game = byId.get(id);
-        if (!game || state.selection.games.some(g => g.id === id)) return;
-        state.selection.games.push({ id: game.id, name: game.name, hours: num(state.defaultHours, 1.5) });
-        changed({ list: true });
-    }
-
-    // ---------- list ----------
-
-    function renderList() {
-        const games = state.selection.games;
-        $("listName").textContent = state.selection.name ?? "";
-        $("trackStart").value = state.selection.trackStart ?? "";
-        $("listBody").innerHTML = games.length
-            ? games.map((g, i) => `
-<tr><td class="num">${i + 1}</td>
-<td class="game">${esc(g.name ?? byId.get(g.id)?.name ?? g.id)}<span class="id">${esc(g.id ?? "by name")}</span></td>
-<td class="hrs"><input type="number" min="0.1" step="0.1" value="${esc(g.hours)}" data-hours="${i}" aria-label="Hours"></td>
-<td class="del"><button class="btn small ghost danger" type="button" data-remove="${i}" aria-label="Remove">✕</button></td></tr>`).join("")
-            : `<tr><td colspan="4" class="empty">No games yet. Use Quick pick, the example list, or search.</td></tr>`;
-    }
-
-    function renderTotals(summary, notes) {
-        $("statGames").textContent = formatCount(summary.games);
-        $("statHours").textContent = `${formatHours(summary.totalHours)}h`;
-        $("barGames").firstElementChild.style.width = `${summary.gamesProgress * 100}%`;
-        $("barHours").firstElementChild.style.width = `${summary.hoursProgress * 100}%`;
-        $("barGames").classList.toggle("full", summary.gamesProgress >= 1);
-        $("barHours").classList.toggle("full", summary.hoursProgress >= 1);
-        $("noteGames").textContent = summary.games >= TIERS.games
-            ? `Top tier reached (${TIERS.games}+)` : `${TIERS.games - summary.games} more for the top tier`;
-        $("noteHours").textContent = summary.totalHours >= TIERS.hours
-            ? `Top tier reached (${formatCount(TIERS.hours)}h)` : `${formatHours(TIERS.hours - summary.totalHours)}h to the top tier`;
-        const since = state.selection.trackStart ? hoursSince(state.selection.trackStart) : null;
-        if (since != null && since > 0) $("noteHours").textContent += ` · ${formatHours(Math.floor(since * 10) / 10)}h since ${state.selection.trackStart}`;
-        $("notes").innerHTML = notes.map(n => `<li class="${n.level}">${esc(n.text)}</li>`).join("");
-    }
-
-    // ---------- outputs ----------
-
-    function renderOutputs() {
-        const resolved = resolveSelection(catalog.games, state.selection);
-        const notes = [];
-        const describe = e => e.name ?? e.id;
-        if (resolved.missing.length) notes.push({ level: "error", text: `Not in the catalog (remove or fix): ${resolved.missing.map(describe).join(", ")}` });
-        if (resolved.ambiguous.length) notes.push({ level: "error", text: `More than one game has this name: ${resolved.ambiguous.map(describe).join(", ")}` });
-        if (resolved.duplicates.length) notes.push({ level: "warn", text: `Listed twice (only the first counts): ${resolved.duplicates.map(describe).join(", ")}` });
-        if (resolved.invalid.length) notes.push({ level: "error", text: `Hours must be at least 0.1: ${resolved.invalid.map(describe).join(", ")}` });
-        const check = validateTable(resolved.table, { trackStart: resolved.trackStart });
-        for (const text of check.errors) notes.push({ level: "error", text });
-        for (const text of check.warnings) notes.push({ level: "warn", text });
-        const summary = summarize(resolved.table);
-        renderTotals(summary, state.selection.games.length ? notes : []);
-
-        latest = null;
-        const ok = resolved.table.length > 0 && check.ok && !resolved.invalid.length;
-        if (ok) {
-            try {
-                latest = { scripts: renderScripts(resolved.table, { trackStart: resolved.trackStart, options: state.options }, templates), summary };
-            } catch (error) {
-                notes.push({ level: "error", text: error.message });
-            }
-        }
-        for (const key of ["main", "variety", "gameTime"]) {
-            const out = latest?.scripts[key];
-            root.querySelector(`[data-out="${key}"]`).value = out ? out.text : "// Add games to your list to build the script.";
-            root.querySelector(`[data-file="${key}"]`).textContent = out ? `${out.file} · ${formatCount(out.text.length)} bytes` : "";
-            root.querySelector(`[data-copy="${key}"]`).disabled = !out;
-            root.querySelector(`[data-download="${key}"]`).disabled = !out;
-        }
-    }
-
-    let outputTimer = null;
-    function changed({ list = false } = {}) {
-        save();
-        if (list) {
-            renderList();
-            renderResults();
-            renderPick();
-        }
-        clearTimeout(outputTimer);
-        outputTimer = setTimeout(renderOutputs, list ? 0 : 150);
-    }
-
-    function renderTabs() {
-        for (const b of $("tabs").querySelectorAll("[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === state.tab));
-        for (const p of root.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== state.tab;
-    }
-
-    function renderOptions() {
+    function renderAdvanced() {
+        $("trackStart").value = state.trackStart ?? "";
         for (const input of root.querySelectorAll("[data-opt]")) {
-            const path = input.dataset.opt.split(".");
-            const value = path.reduce((o, k) => o?.[k], state.options);
+            const value = input.dataset.opt.split(".").reduce((o, k) => o?.[k], state.options);
             if (input.type === "checkbox") input.checked = !!value;
             else input.value = value;
         }
     }
 
+    function renderOutput() {
+        const notes = [];
+        let resolved = null;
+        try {
+            resolved = resolveSelection(catalog.games, currentSelection());
+        } catch (error) {
+            notes.push({ level: "error", text: error.message });
+        }
+        if (state.mode === "custom" && spreadError) notes.push({ level: "error", text: spreadError });
+        const table = resolved?.table ?? [];
+        if (resolved) {
+            const name = e => e.name ?? e.id;
+            if (resolved.missing.length) notes.push({ level: "error", text: `Not in Discord's catalog: ${resolved.missing.map(name).join(", ")}` });
+            if (resolved.ambiguous.length) notes.push({ level: "error", text: `Ambiguous: ${resolved.ambiguous.map(name).join(", ")}` });
+            if (resolved.invalid.length) notes.push({ level: "error", text: `Hours must be at least 0.1: ${resolved.invalid.map(name).join(", ")}` });
+        }
+        const check = validateTable(table, { trackStart: state.trackStart });
+        for (const text of check.errors) if (table.length) notes.push({ level: "error", text });
+        for (const text of check.warnings) if (/since/.test(text)) notes.push({ level: "warn", text });
+
+        const summary = summarize(table);
+        $("sumGames").textContent = formatCount(summary.games);
+        $("sumHours").textContent = formatHours(summary.totalHours);
+        $("tierGames").classList.toggle("done", summary.games >= TIERS.games);
+        $("tierHours").classList.toggle("done", summary.totalHours >= TIERS.hours);
+        $("tierGames").title = `Game Variety: ${summary.games}/${TIERS.games} games`;
+        $("tierHours").title = `Game Time: ${formatHours(summary.totalHours)}/${formatCount(TIERS.hours)}h`;
+        $("notes").innerHTML = notes.map(n => `<li class="${n.level}">${esc(n.text)}</li>`).join("");
+
+        latest = null;
+        if (table.length && check.ok && !notes.some(n => n.level === "error")) {
+            latest = renderScripts(table, { trackStart: state.trackStart, options: state.options }, templates);
+        }
+        for (const key of ["main", "variety", "gameTime"]) {
+            for (const b of root.querySelectorAll(`[data-copy="${key}"], [data-download="${key}"]`)) b.disabled = !latest;
+            const file = root.querySelector(`[data-file="${key}"]`);
+            if (file) file.textContent = latest ? latest[key].file : "";
+        }
+        $("preview").value = latest ? latest.main.text : "";
+    }
+
+    let outputTimer = null;
+    function changed({ custom = false, random = false, now = false } = {}) {
+        if (state.mode === "custom" || custom) respread();
+        save();
+        if (custom) renderCustom();
+        if (random) renderRandom();
+        clearTimeout(outputTimer);
+        outputTimer = setTimeout(renderOutput, now ? 0 : 120);
+    }
+
+    let toastTimer = null;
+    function toast(text) {
+        $("toast").textContent = text;
+        $("toast").hidden = false;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { $("toast").hidden = true; }, 3200);
+    }
+
+    // ---------- custom: add games ----------
+
+    function addGames(entries) {
+        const have = new Set(state.custom.games.map(g => g.id));
+        const fresh = entries.filter(g => !have.has(g.id)).map(g => ({ id: g.id, name: g.name, hours: 1.5, ...(g.exe ? { exe: g.exe } : {}) }));
+        state.custom.games.push(...fresh);
+        state.custom.name = null;
+        changed({ custom: true, now: true });
+        return fresh.length;
+    }
+
+    let activeResult = 0;
+    function renderResults() {
+        const q = $("search").value;
+        if (!q.trim()) { $("results").hidden = true; return; }
+        const have = new Set(state.custom.games.map(g => g.id));
+        const results = searchCatalog(index, q, { limit: 12, boostIds: scoreById.size ? new Set(scoreById.keys()) : null });
+        activeResult = 0;
+        $("results").innerHTML = results.length
+            ? results.map((g, i) => `<li data-add="${esc(g.id)}" class="${i === 0 ? "active" : ""}"><span>${esc(g.name)}</span>${have.has(g.id) ? `<span class="muted">Added</span>` : ""}</li>`).join("")
+            : `<li class="none">No games found</li>`;
+        $("results").hidden = false;
+    }
+
     // ---------- events ----------
 
     root.addEventListener("click", async event => {
-        const target = event.target.closest("button, [data-vibe]");
-        if (!target || !root.contains(target)) return;
-        const { action, vibe, mode, add, remove, tab, copy } = target.dataset;
-        if (vibe) {
-            state.pick.vibe = vibe;
-            save();
-            renderPick();
-        } else if (mode) {
-            state.pick.mode = mode;
-            save();
-            renderPick();
-        } else if (add) {
-            addGame(add);
-        } else if (remove != null) {
-            state.selection.games.splice(Number(remove), 1);
-            changed({ list: true });
-        } else if (tab) {
-            state.tab = tab;
-            save();
-            renderTabs();
-        } else if (copy) {
-            const out = latest?.scripts[copy];
-            if (!out) return;
-            const ok = await copyText(out.text, root.querySelector(`[data-out="${copy}"]`));
-            const toast = root.querySelector(`[data-toast="${copy}"]`);
-            toast.textContent = ok ? "Copied" : "Select the text and copy it";
-            setTimeout(() => { toast.textContent = ""; }, 1800);
-        } else if (target.dataset.download) {
-            const out = latest?.scripts[target.dataset.download];
-            if (out) download(out.file, out.text);
-        } else if (action) {
-            await runAction(action);
+        const target = event.target.closest("button, [data-add]");
+        if (!target || !root.contains(target)) {
+            if (!event.target.closest(".search")) $("results").hidden = true;
+            return;
         }
+        const d = target.dataset;
+        if (d.mode) {
+            state.mode = d.mode;
+            renderMode();
+            changed({ now: true });
+        } else if (d.vibe) {
+            state.custom.vibe = d.vibe;
+            save();
+            renderCustom();
+        } else if (d.spread) {
+            state.custom.spread = d.spread;
+            if (d.spread !== "manual") state.custom.total = pos($("cTotal").value, state.custom.total);
+            changed({ custom: true });
+        } else if (d.add) {
+            const game = byId.get(d.add);
+            if (game) addGames([game]);
+            $("search").value = "";
+            $("results").hidden = true;
+        } else if (d.remove != null) {
+            state.custom.games.splice(Number(d.remove), 1);
+            changed({ custom: true });
+        } else if (d.copy) {
+            const out = latest?.[d.copy];
+            if (out && await copyText(out.text)) toast("Copied. Paste it in Discord's console (Ctrl+Shift+I).");
+        } else if (d.download) {
+            const out = latest?.[d.download];
+            if (out) download(out.file, out.text);
+        } else if (d.action) {
+            await runAction(d.action);
+        }
+        if (!event.target.closest(".search")) $("results").hidden = true;
     });
 
     async function runAction(action) {
-        const games = state.selection.games;
+        const c = state.custom;
         try {
-            if (action === "pick-replace") applyPick(false);
-            else if (action === "pick-add") applyPick(true);
-            else if (action === "preset") {
-                state.selection = normalizeSelection(await presetPromise);
-                changed({ list: true });
+            if (action === "max") {
+                Object.assign(state.random, { count: ORIGINAL_MAX.games, hours: ORIGINAL_MAX.hours });
+                changed({ random: true, now: true });
+            } else if (action === "shuffle") {
+                state.random.seed = newSeed();
+                changed({ random: true, now: true });
+            } else if (action === "add-vibe") {
+                if (!ranking) return;
+                const skipIds = new Set(c.games.map(g => g.id));
+                addGames(pickFromRanking(ranking, { vibe: c.vibe, count: Math.floor(pos(c.top, 100)), skipIds }));
             } else if (action === "clear") {
-                if (games.length > 10 && !confirm(`Remove all ${games.length} games from your list?`)) return;
-                state.selection = { ...state.selection, name: null, games: [] };
-                changed({ list: true });
-            } else if (action === "set-all") {
-                state.selection.games = setAllHours(games, $("toolSetAll").value);
-                changed({ list: true });
-            } else if (action === "split") {
-                state.selection.games = splitEvenly(games, $("toolSplit").value);
-                changed({ list: true });
-            } else if (action === "scale") {
-                state.selection.games = scaleTo(games, $("toolScale").value);
-                changed({ list: true });
-            } else if (action === "fill-window") {
-                const since = state.selection.trackStart ? hoursSince(state.selection.trackStart) : null;
-                if (!since || since <= 0) {
-                    alert("Pick a past \"Played since\" date first.");
-                    return;
+                c.games = [];
+                c.name = null;
+                changed({ custom: true, now: true });
+            } else if (action === "use-window") {
+                const since = state.trackStart ? hoursSince(state.trackStart) : null;
+                if (!since || since <= 0) { $("trackStart").focus(); return; }
+                const hours = Math.floor(since * 10) / 10;
+                if (state.mode === "random") {
+                    state.random.hours = hours;
+                    changed({ random: true, now: true });
+                } else if (c.spread === "manual") {
+                    c.games = scaleTo(c.games, hours);
+                    changed({ custom: true, now: true });
+                } else {
+                    c.total = hours;
+                    changed({ custom: true, now: true });
                 }
-                state.selection.games = scaleTo(games, Math.floor(since * 10) / 10);
-                changed({ list: true });
+            } else if (action === "example") {
+                applyImport(await examplePromise);
             } else if (action === "export") {
-                const { version, name, trackStart } = state.selection;
-                const file = { version, ...(name ? { name } : {}), trackStart, options: state.options, games: state.selection.games };
+                const sel = currentSelection();
+                const file = { version: 1, ...(sel.name ? { name: sel.name } : {}), trackStart: sel.trackStart, options: state.options, games: sel.games };
                 download("selection.json", JSON.stringify(file, null, 2) + "\n", "application/json");
             }
         } catch (error) {
-            alert(error.message);
+            toast(error.message);
         }
+    }
+
+    function applyImport(data) {
+        const sel = normalizeSelection(data);
+        state.mode = "custom";
+        Object.assign(state.custom, { name: sel.name ?? null, games: sel.games, spread: "manual" });
+        state.trackStart = sel.trackStart;
+        if (data.options) state.options = normalizeOptions(data.options);
+        renderMode();
+        renderAdvanced();
+        changed({ custom: true, now: true });
     }
 
     root.addEventListener("input", event => {
         const t = event.target;
-        if (t.dataset.hours != null) {
-            const entry = state.selection.games[Number(t.dataset.hours)];
+        if (t === $("rCount") || t === $("rHours")) {
+            state.random.count = Math.floor(pos($("rCount").value, state.random.count));
+            state.random.hours = pos($("rHours").value, state.random.hours);
+            changed({ random: true });
+        } else if (t === $("cTop")) {
+            state.custom.top = Math.floor(pos(t.value, state.custom.top));
+            save();
+        } else if (t === $("cTotal")) {
+            state.custom.total = pos(t.value, state.custom.total);
+            respread();
+            for (const [i, g] of state.custom.games.entries()) {
+                const cell = $("cList").children[i]?.querySelector(".hrs-val");
+                if (cell) cell.textContent = `${formatHours(g.hours || 0)}h`;
+            }
+            changed();
+        } else if (t.dataset.hours != null) {
+            const entry = state.custom.games[Number(t.dataset.hours)];
             if (entry) entry.hours = Number(t.value);
+            $("cTotal").value = state.custom.games.reduce((s, g) => s + toTenths(g.hours || 0), 0) / 10;
             changed();
         } else if (t === $("search")) {
-            clearTimeout(searchTimer);
-            searchTimer = setTimeout(renderResults, 60);
-        } else if (t === $("pickCount") || t === $("pickTotal") || t === $("pickEach")) {
-            state.pick.count = Math.floor(num($("pickCount").value, state.pick.count));
-            state.pick.total = num($("pickTotal").value, state.pick.total);
-            state.pick.each = num($("pickEach").value, state.pick.each);
-            save();
-            if (t === $("pickCount")) renderPick();
-        } else if (t === $("defaultHours")) {
-            state.defaultHours = num(t.value, state.defaultHours);
-            save();
+            renderResults();
         } else if (t.dataset.opt) {
             const path = t.dataset.opt.split(".");
             const draft = structuredClone(state.options);
-            const holder = path.length > 1 ? draft[path[0]] : draft;
-            holder[path.at(-1)] = t.type === "checkbox" ? t.checked : Number(t.value);
+            (path.length > 1 ? draft[path[0]] : draft)[path.at(-1)] = t.type === "checkbox" ? t.checked : Number(t.value);
             state.options = normalizeOptions(draft);
             changed();
         }
@@ -493,40 +477,48 @@ ${chosen.has(game.id) ? `<span class="added">Added</span>` : `<button class="btn
     root.addEventListener("change", async event => {
         const t = event.target;
         if (t === $("trackStart")) {
-            state.selection.trackStart = t.value || null;
-            changed();
+            state.trackStart = t.value || null;
+            changed({ now: true });
         } else if (t === $("importFile") && t.files?.[0]) {
             try {
-                const data = JSON.parse(await t.files[0].text());
-                state.selection = normalizeSelection(data);
-                if (data.options) {
-                    state.options = normalizeOptions(data.options);
-                    renderOptions();
-                }
-                changed({ list: true });
+                applyImport(JSON.parse(await t.files[0].text()));
             } catch (error) {
-                alert(`Couldn't import: ${error.message}`);
+                toast(`Couldn't import: ${error.message}`);
             }
             t.value = "";
         } else if (t.dataset.opt) {
-            renderOptions();
+            renderAdvanced();
         }
     });
 
     $("search").addEventListener("keydown", event => {
-        if (event.key !== "Enter") return;
-        const first = root.querySelector("[data-add]");
-        if (first) {
-            addGame(first.dataset.add);
+        const items = [...$("results").querySelectorAll("[data-add]")];
+        if (event.key === "Escape") {
+            $("results").hidden = true;
+        } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && items.length) {
             event.preventDefault();
+            activeResult = (activeResult + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+            items.forEach((li, i) => li.classList.toggle("active", i === activeResult));
+        } else if (event.key === "Enter" && items[activeResult]) {
+            event.preventDefault();
+            items[activeResult].click();
         }
     });
 
-    $("defaultHours").value = state.defaultHours;
+    rankingPromise.then(data => {
+        ranking = data;
+        scoreById = new Map(ranking.games.map(g => [g.id, g.score]));
+        minScore = Math.min(...ranking.games.map(g => g.score)) || 1;
+        renderVibes();
+        renderCustom();
+        changed({ custom: state.mode === "custom" });
+    }, () => {});
+
     renderVibes();
-    renderPick();
-    renderList();
-    renderOptions();
-    renderTabs();
-    renderOutputs();
+    renderMode();
+    renderRandom();
+    respread();
+    renderCustom();
+    renderAdvanced();
+    renderOutput();
 }

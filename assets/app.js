@@ -4,14 +4,15 @@ const CORE = "../skills/discord-badge-unlocker/scripts/core.mjs";
 const SNAPSHOT_URL = new URL("../data/catalog.min.json", import.meta.url).href;
 
 const status = document.getElementById("catalog-status");
+const start = document.getElementById("start");
 const button = document.getElementById("load-generator");
-const hint = document.getElementById("preload-hint");
 const mountPoint = document.getElementById("generator");
 
 const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-function setStatus(state, text) {
+function setStatus(state, text, title = "") {
     status.dataset.state = state;
+    status.title = title;
     status.querySelector(".text").textContent = text;
 }
 
@@ -44,7 +45,7 @@ async function loadOnMainThread() {
 }
 
 const catalogPromise = loadInWorker().catch(async workerError => {
-    // A worker that ran and reported "all sources failed" won't do better on the main thread.
+    // A worker that ran and found every source down won't do better on the main thread.
     if (/Could not load the Discord catalog/.test(workerError?.message ?? "")) throw workerError;
     return loadOnMainThread();
 });
@@ -52,12 +53,11 @@ const catalogPromise = loadInWorker().catch(async workerError => {
 catalogPromise.then(
     catalog => {
         const when = catalog.fetchedAt ? catalog.fetchedAt.slice(0, 10) : "unknown date";
-        setStatus(catalog.live ? "live" : "snapshot", catalog.live
-            ? `${fmt(catalog.games.length)} games · live from ${catalog.sourceLabel}`
-            : `${fmt(catalog.games.length)} games · offline snapshot from ${when}`);
+        if (catalog.live) setStatus("live", `${fmt(catalog.games.length)} games`, `Live from ${catalog.sourceLabel}`);
+        else setStatus("snapshot", `${fmt(catalog.games.length)} games · offline`, `Offline snapshot from ${when}`);
     },
     error => {
-        setStatus("error", "Catalog unavailable");
+        setStatus("error", "Catalog unavailable", error.message);
         console.error(error);
     }
 );
@@ -66,31 +66,20 @@ let generatorModule = null;
 const preloadGenerator = () => (generatorModule ??= import("./generator.js"));
 
 const idle = window.requestIdleCallback ?? (cb => setTimeout(cb, 400));
-idle(() => {
-    preloadGenerator().then(
-        () => { hint.textContent = "Ready."; },
-        () => { hint.textContent = "Loads when you click."; generatorModule = null; }
-    );
-}, { timeout: 2500 });
+idle(() => { preloadGenerator().catch(() => { generatorModule = null; }); }, { timeout: 2500 });
 
 button.addEventListener("click", async () => {
-    if (!mountPoint.hidden) {
-        mountPoint.scrollIntoView({ behavior: "smooth" });
-        return;
-    }
     button.disabled = true;
     button.textContent = "Loading…";
     try {
         const { mount } = await preloadGenerator();
+        start.hidden = true;
         mountPoint.hidden = false;
         mount(mountPoint, { catalogPromise });
-        button.textContent = "Open generator";
-        mountPoint.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
         generatorModule = null;
-        button.textContent = "Load generator";
-        hint.textContent = `Couldn't load the generator: ${error.message}`;
-    } finally {
         button.disabled = false;
+        button.textContent = "Load generator";
+        console.error(error);
     }
 });

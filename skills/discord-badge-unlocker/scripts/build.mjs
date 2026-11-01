@@ -8,6 +8,7 @@
 //   node build.mjs pick [--vibe popular|competitive|cozy|adventurer|builder|friends] [--top 150]
 //        [--mode weighted|even|flat] [--total 5000] [--hours 1.5] [--add selection.json]
 //        [--track-start YYYY-MM-DD] [--ranking F] [--out selection.json]
+//   node build.mjs random [--count 125] [--hours 5000] [--max] [--seed N] [--catalog F] [--out selection.json]
 //   node build.mjs build --selection selection.json --out out/ [--catalog F]
 //        [--track-start YYYY-MM-DD | --no-track-start] [--batch-size 25] [--delay-ms 450] [--dry-run]
 //        [--variety-batch-size 5] [--variety-delay-ms 4000] [--rotate-minutes 30] [--keep-rotating]
@@ -17,9 +18,9 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
-    HOUR_MODES, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, loadCatalog,
-    normalizeCatalog, normalizeSelection, parseCatalog, parseRanking, pickFromRanking, resolveSelection,
-    searchCatalog, serializeCatalog, summarize, validateTable
+    HOUR_MODES, ORIGINAL_MAX, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, loadCatalog,
+    normalizeCatalog, normalizeSelection, parseCatalog, parseRanking, pickFromRanking, pickRandom, resolveSelection,
+    searchCatalog, serializeCatalog, splitEvenly, summarize, validateTable
 } from "./core.mjs";
 import { loadTemplates, normalizeOptions, renderGamesMarkdown, renderScripts } from "./templates.mjs";
 
@@ -148,6 +149,24 @@ async function cmdPick(args) {
     }
 }
 
+// Random games from the whole catalog, hours split evenly (like the original scripts). --max = 250 games, 6,000h.
+async function cmdRandom(args) {
+    const catalog = await getCatalog(args);
+    const count = args.max ? ORIGINAL_MAX.games : Number(args.count) > 0 ? Math.floor(Number(args.count)) : 125;
+    const hours = args.max ? ORIGINAL_MAX.hours : Number(args.hours) > 0 ? Number(args.hours) : 5000;
+    const seed = Number.isInteger(Number(args.seed)) && args.seed !== true ? Number(args.seed) >>> 0 : (Date.now() >>> 0);
+    const picked = pickRandom(catalog.games, { count, seed });
+    const games = splitEvenly(picked.map(g => ({ id: g.id, name: g.name, hours: 1 })), hours);
+    const selection = { version: 1, name: `Random ${games.length} games (seed ${seed})`, trackStart: null, games };
+    const text = JSON.stringify(selection, null, 2) + "\n";
+    if (args.out && args.out !== true) {
+        await writeFile(args.out, text);
+        log(`Picked ${games.length} random games, ${formatHours(hours)}h, seed ${seed} → ${args.out}`);
+    } else {
+        process.stdout.write(text);
+    }
+}
+
 function optionsFromArgs(base, args) {
     const o = normalizeOptions(base ?? {});
     const num = key => (args[key] !== undefined && args[key] !== true ? Number(args[key]) : undefined);
@@ -213,13 +232,14 @@ const COMMANDS = {
     search: cmdSearch,
     vibes: cmdVibes,
     pick: cmdPick,
+    random: cmdRandom,
     build: cmdBuild
 };
 
 const [command, ...rest] = process.argv.slice(2);
 const run = COMMANDS[command];
 if (!run) {
-    log("Usage: node build.mjs <fetch-catalog|slim-catalog|search|vibes|pick|build> [options]");
+    log("Usage: node build.mjs <fetch-catalog|slim-catalog|search|vibes|pick|random|build> [options]");
     log("See the top of this file or SKILL.md for the options.");
     process.exit(command ? 1 : 0);
 }

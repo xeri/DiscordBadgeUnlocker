@@ -2,50 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#2c2d32">
 <title>Discord Badge Unlocker</title>
 <link rel="stylesheet" href="assets/style.css">
 <script type="module" src="assets/app.js"></script>
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="logo" aria-hidden="true"></span>Discord Badge Unlocker</div>
-  <span id="catalog-status" class="pill" data-state="loading" role="status">
-    <span class="dot" aria-hidden="true"></span><span class="text">Loading Discord catalog…</span>
-  </span>
+<header class="titlebar">
+  <div class="title"><span class="app-icon" aria-hidden="true"></span>Discord Badge Unlocker</div>
+  <span id="catalog-status" class="status" data-state="loading" role="status"><span class="dot" aria-hidden="true"></span><span class="text">Loading</span></span>
 </header>
-
-<main>
-  <section class="hero">
-    <h1>Scripts for Discord's Game&nbsp;Variety and Game&nbsp;Time badges</h1>
-    <p class="lede">Pick games from Discord's live catalog, set the hours, and get one console script that covers both badges.
-      Everything is built inside this page. The only network requests fetch Discord's public game list.</p>
-
-    <div class="modes">
-      <article class="card mode">
-        <h2>Web generator</h2>
-        <p>Choose games by vibe or by name, set hours, then copy the script.</p>
-        <div class="row">
-          <button id="load-generator" class="btn primary" type="button">Load generator</button>
-          <span id="preload-hint" class="muted small">Preparing in the background…</span>
-        </div>
-      </article>
-      <article class="card mode">
-        <h2>AI agent skill</h2>
-        <p>Point Claude Code (or any agent) at <code>skills/discord-badge-unlocker/SKILL.md</code> and ask for something like
-          <em>"a badge script with 120 cozy games and 2,000 hours"</em>. It uses the same code as this page.</p>
-        <pre class="cmd"><code>node skills/discord-badge-unlocker/scripts/build.mjs pick --vibe cozy --top 120 --total 2000 --out selection.json</code></pre>
-      </article>
+<div class="shell">
+  <nav class="rail" aria-hidden="true"><span class="rail-pill"></span><span class="rail-icon"></span></nav>
+  <main class="panel">
+    <div class="content">
+      <div id="start" class="start"><button id="load-generator" class="btn primary lg" type="button">Load generator</button></div>
+      <section id="generator" class="gen" hidden></section>
     </div>
-  </section>
-
-  <section id="generator" class="generator" hidden></section>
-</main>
-
-<footer class="foot">
-  <p>Based on <a href="https://github.com/everyoneexe/discord-game-badge-presence" rel="noreferrer">everyoneexe/discord-game-badge-presence</a> (GPL-3.0).</p>
-  <p>The scripts send synthetic play-time telemetry to Discord. That breaks Discord's Terms of Service: your account, your risk.</p>
-</footer>
+  </main>
+</div>
 </body>
 </html>

@@ -27,7 +27,7 @@ export function normalizeText(value) {
 const basename = value => String(value ?? "").split(/[\\/]/).pop();
 
 // Executables that are almost never the game itself.
-const SKIP_EXE = /launcher|server|dedicated|editor|setup|install|unins|demo|crash|report|anticheat|anti_cheat|easyanticheat|battleye|beservice|redist|dxsetup|benchmark|patcher|updater/i;
+const SKIP_EXE = /launcher|boot\.exe$|server|dedicated|editor|setup|install|unins|demo|crash|report|anticheat|anti_cheat|easyanticheat|battleye|beservice|redist|dxsetup|benchmark|patcher|updater/i;
 
 // Same fallback name the original game-time script used for apps with no executables.
 export function slugExe(name) {
@@ -429,4 +429,38 @@ export function assignHours(games, { mode = "weighted", total = 5000, perGame = 
     if (mode === "flat") return setAllHours(base, perGame);
     if (mode === "even") return splitEvenly(base, total);
     return scaleTo(base, total);
+}
+
+// ---------- random pick (like the original scripts) ----------
+
+// The original game-time-presence.js defaults: 250 random games, 6,000h split evenly.
+export const ORIGINAL_MAX = Object.freeze({ games: 250, hours: 6000 });
+
+// Games with a real win32 executable (no made-up "<slug>.exe"), like the original's catalog filter.
+export function randomPool(games) {
+    return games.filter(game => game.exe !== slugExe(game.name));
+}
+
+// Small seeded PRNG so the same seed always gives the same games (the scripts themselves stay random-free).
+function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+export function pickRandom(games, { count = 125, seed = 1 } = {}) {
+    const pool = randomPool(games);
+    const n = Math.max(0, Math.min(Math.floor(count), pool.length));
+    const order = pool.map((_, i) => i);
+    const rand = mulberry32(seed);
+    for (let i = 0; i < n; i++) {
+        const j = i + Math.floor(rand() * (order.length - i));
+        [order[i], order[j]] = [order[j], order[i]];
+    }
+    return order.slice(0, n).map(i => pool[i]);
 }

@@ -4,10 +4,10 @@ A personal, local tool that builds console scripts for Discord's **Game Variety*
 
 It works two ways, using the same code:
 
-1. **Web generator:** a page that runs on localhost. Discord's game catalog loads in the background. Click **Load generator**, then:
-   - **Quick pick** from a researched global most-played ranking, by vibe (Popular, Competitive, Cozy & cute, Adventurer, Builder, With friends), or **search** all ~25,000 games
-   - set hours (weighted, even, the same for each, or "fill the window since a date")
-   - copy the script
+1. **Web generator:** a page that runs on localhost. Discord's game catalog loads in the background. Click **Load generator**, then pick a mode:
+   - **Random:** random games from the whole catalog with the hours split evenly, like the original scripts. **Max** sets the original's 250 games and 6,000h.
+   - **Custom:** games and hours only. Add the top N of a vibe from a researched global most-played ranking (Popular, Competitive, Cozy & cute, Adventurer, Builder, With friends), or search all ~25,000 games. Spread the hours Weighted, Even or Manual.
+   - **Advanced** (collapsed): played-since date, example list, import/export, script options, and the separate Variety and Game Time scripts.
 2. **AI agent skill:** [`skills/discord-badge-unlocker/SKILL.md`](skills/discord-badge-unlocker/SKILL.md) plus a Node CLI. Any agent can follow it: catalog → pick → build → verify in a mocked Discord client.
 
 ## Run the page
@@ -41,6 +41,7 @@ S=skills/discord-badge-unlocker/scripts
 node $S/build.mjs fetch-catalog --out data/catalog.min.json      # refresh the offline snapshot
 node $S/build.mjs vibes                                          # ranked games per vibe
 node $S/build.mjs pick --vibe cozy --top 120 --total 2000 --out selection.json
+node $S/build.mjs random --max --out selection.json                # 250 random games, 6,000h (like the original)
 node $S/build.mjs search "hollow knight"
 node $S/build.mjs build --selection selection.json --out out/mine
 node $S/verify.mjs out/mine                                      # mocked Discord run
@@ -52,7 +53,7 @@ npm run verify                                                   # build + verif
 The ranking lives in `data/rankings/global.json` and is rebuilt with `node tools/build-ranking.mjs`.
 
 **Score:** estimated PC hours played in the last 30 days.
-- **Steam games:** [Steam Charts](https://steamcharts.com/top) 30-day hours for the top 600. [Steam's official chart API](https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/) fills in the games Steam Charts misses.
+- **Steam games:** [Steam Charts](https://steamcharts.com/top) 30-day hours for the top 1,000. [Steam's official chart API](https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/) fills in the games Steam Charts misses.
 - **Other launchers:** games that are mostly played elsewhere (Battle.net, EA app, Epic, Xbox app, their own launchers) get a launcher factor.
 - **Not on Steam:** games like League of Legends, Minecraft, Roblox, Fortnite, VALORANT and Genshin get an estimate. The estimates draw on [Newzoo's 2025 PC MAU ranking](https://wbgsv0a.gigazine.net/gsc_news/en/20251220-2025-top-10-games), [Twitch State of Gaming 2026](https://streamer.guide/blog/twitch-state-of-gaming-2026), [TwitchTracker](https://twitchtracker.com/games), [MMO-Population](https://mmo-population.com/), [ActivePlayer.io](https://activeplayer.io/most-played-games/), [DemandSage](https://demandsage.com/most-played-games-right-now), [LinuxBuz](https://linuxbuz.com/best-resources/most-popular-pc-games-by-monthly-active-users-2026) and [Shane the Gamer](https://www.shanethegamer.com/research/most-played-video-games-statistics/).
 
