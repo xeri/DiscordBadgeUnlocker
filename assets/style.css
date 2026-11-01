@@ -341,6 +341,9 @@ body:has(> .gate) { overflow: hidden; }
 .gate-logo { width: 48px; height: 48px; display: block; }
 .gate h1 { margin: 0; font-size: 20px; line-height: 1.2; font-weight: 600; color: var(--text-strong); }
 .gate p { margin: 0; color: var(--text-2); }
+.gate p strong { color: var(--text-strong); font-weight: 600; }
+.gate p a { color: var(--link); text-decoration: none; }
+.gate p a:hover { text-decoration: underline; }
 .gate-code {
     margin: 0; padding: 12px; overflow-x: auto;
     background: var(--base-lowest); border: 1px solid var(--border-subtle); border-radius: var(--r);

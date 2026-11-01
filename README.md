@@ -3,7 +3,7 @@
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
 
 > [!WARNING]
-> The scripts send synthetic play-time telemetry to Discord. That breaks Discord's Terms of Service and can get an account flagged. Use at your own risk.
+> **Educational & Research Use Only:** Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](DISCLAIMER.md).
 
 ```
 /*
