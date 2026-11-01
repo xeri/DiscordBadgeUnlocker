@@ -42,7 +42,7 @@ Open <http://127.0.0.1:8080/> and click **Load generator**.
 
 From Discord's own help article, [Discord Profile Badges: What Each Badge Means](https://support.discord.com/hc/en-us/articles/44369363856663):
 
-- Only the Discord desktop app counts, not the web version.
+- Only the Discord desktop app counts, not the web version. (Vesktop does not work, it's web)
 - Progress only counts with **Use data to personalize my Discord experience** turned on.
 - Game Time counts time played on or after **8 December 2025**. A session longer than the time since then starts before it.
 
