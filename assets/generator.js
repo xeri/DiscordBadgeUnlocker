@@ -2,8 +2,9 @@
 // All script text comes from the shared skill code, so the page and the CLI produce identical files.
 
 import {
-    BADGE_TIERS, ORIGINAL_MAX, VIBES, assignHours, catalogIndex, countByVibe, fitTier, formatCount, formatHours, hoursSince,
-    minHours, normalizeSelection, parseRanking, pickFromRanking, pickRandom, resolveSelection, roundHours, scaleTo,
+    BADGE_TIERS, GAME_TIME_SINCE, ORIGINAL_MAX, TIERS, VIBES, assignHours, catalogIndex, countByVibe, countableHours, fitTier,
+    formatCount, formatHours, hoursSince, minHours, normalizeSelection, parseRanking, pickFromRanking, pickRandom, randomPool,
+    resolveSelection, roundHours, scaleTo,
     searchCatalog, sendGames, sendHours, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable, vibeKey
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import { DEFAULT_OPTIONS, OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
@@ -39,13 +40,58 @@ const TIP = {
     since: "Caps the hours at the time since this day (00:00 UTC). The scripts warn if a session would start before it. Leave empty to skip.",
     variety: "The original-style engine. While it claims, it also shows each game as your activity. Run only one of the three scripts.",
     gameTime: "The main script's engine under the original window.__gameTimePresence.boost() name. Run only one of the three scripts.",
-    main: "Both badges in one run. Paste it in Discord's console (Ctrl+Shift+I).",
+    main: "Both badges in one run. Paste it into the console of the Discord desktop app (Ctrl+Shift+I).",
+    // After Copy or Download. Both requirements are from Discord's help article on the badges.
+    run: "into the console of the Discord desktop app (Ctrl+Shift+I). Discord in a browser won't work, and nothing counts " +
+        "unless “Use data to personalize my Discord experience” is on.",
+    hours: "Each game's hours go out as one play session that ends when the script runs. Game Time only counts time played on " +
+        "or after 8 December 2025, and it tops out at 5,000h (Eternal). Badges take about 1–2 days to update.",
+    dUntested: "On: every game Discord lists, including the ones it lists no Windows executable for. " +
+        "Off: only games with a real Windows executable, like the original Variety script.",
     untested: "Discord's catalog lists no Windows executable for these games, so the scripts send a made-up “name.exe” with them. " +
         "The original Game Time script sent games like these; the original Variety script left them out. " +
         "Nobody has confirmed whether Discord counts them. To be safe, swap them for other games or add a few spare."
 };
+const HELP_URL = "https://support.discord.com/hc/en-us/articles/44369363856663";
+const MAX_HOURS_EACH = 1e6; // the most per game the scripts sum exactly across the whole catalog
+const TABLE_KEY = "discordBadgeUnlocker:danger-table"; // the Danger Zone table, kept apart from the small state
+const TABLE_HEAD = "# id\tname\texe\thours  (one game per line, tab-separated; lines starting with # are skipped)";
+// Danger Zone script options: [option path, label, max]; no max means on/off. Limits from normalizeOptions({ uncapped }).
+const DANGER_OPTIONS = [
+    ["batchSize", "Batch size", 100000], ["delayMs", "Delay ms", 86400000],
+    ["variety.batchSize", "Variety batch size", 100000], ["variety.delayMs", "Variety delay ms", 86400000],
+    ["variety.rotateMinutes", "Variety minutes per game", 525600], ["dryRun", "Dry run"], ["variety.keepRotating", "Keep rotating (Variety)"]
+];
+const cleanCell = value => String(value ?? "").replace(/[\t\r\n]+/g, " ").trim();
+
+// Reads the Danger Zone table: [{ id, name, exe, hours }] in table order, plus the lines it can't use.
+function parseTable(text, nameFor) {
+    const rows = [];
+    const problems = [];
+    text.split("\n").forEach((line, i) => {
+        if (!line.trim() || line.trimStart().startsWith("#")) return;
+        const [id = "", name = "", exe = "", hours = ""] = line.split("\t").map(cell => cell.trim());
+        const at = `line ${i + 1}`;
+        const h = roundHours(Number(hours));
+        if (!/^\d+$/.test(id)) problems.push(`${at}: the id must be digits`);
+        else if (!exe) problems.push(`${at}: no exe`);
+        else if (!(h >= 0.1)) problems.push(`${at}: hours must be a number of at least 0.1`);
+        else if (h > MAX_HOURS_EACH) problems.push(`${at}: more than ${formatCount(MAX_HOURS_EACH)}h, the most the scripts add up exactly`);
+        else rows.push({ id, name: name || nameFor(id) || id, exe, hours: h });
+    });
+    return { rows, problems };
+}
+
 const INFO_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><circle cx="12" cy="7.6" r="1.25" fill="currentColor" stroke="none"/></svg>`;
 const FILE = Object.fromEntries(OUTPUTS.map(o => [o.key, o.file]));
+const infoButton = (tip, label = "Why?") =>
+    `<button type="button" class="info-btn" data-tip="${esc(tip)}" data-tip-click aria-label="${label}">${INFO_ICON}</button>`;
+const span = ms => { // "45 s", "12 min", "3.4 h", "2.1 days"
+    const s = ms / 1000;
+    return s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${(s / 3600).toFixed(1)} h` : `${(s / 86400).toFixed(1)} days`;
+};
+const bytes = n => (n < 1e6 ? `${Math.round(n / 1e3)} KB` : `${(n / 1e6).toFixed(1)} MB`);
+const compact = n => (n < 1e6 ? formatCount(Math.round(n)) : n < 1e9 ? `${(n / 1e6).toFixed(1)}M` : `${(n / 1e9).toFixed(1)}B`); // "601,536", "197.4M"
 
 // Script options in Advanced: [option path, label, hint, min, max]; no min/max means an on/off switch.
 const D = DEFAULT_OPTIONS;
@@ -91,6 +137,8 @@ const DEFAULT_STATE = () => ({
     // goal: the tiers picked in Random, kept while "Already played" changes so the sent amounts follow
     random: { count: tierAim("variety", topTier("variety")), hours: tierAim("time", topTier("time")), seed: newSeed(), goal: null },
     custom: { name: null, vibe: "popular", top: 100, total: tierAim("time", topTier("time")), spread: "weighted", games: [], manual: null },
+    // count null: every game in the pool. The table itself lives under TABLE_KEY.
+    danger: { count: null, hours: 24, untested: true, seed: newSeed(), options: normalizeOptions({}, { uncapped: true }) },
     trackStart: null,
     options: normalizeOptions()
 });
@@ -104,6 +152,8 @@ function loadState() {
             state.random = { ...state.random, ...(saved.random ?? {}) };
             state.custom = { ...state.custom, ...(saved.custom ?? {}) };
             state.custom.vibe = vibeKey(state.custom.vibe);
+            state.danger = { ...state.danger, ...(saved.danger ?? {}) };
+            state.danger.options = normalizeOptions(state.danger.options, { uncapped: true });
             state.have = normalizeHave(saved.have);
             state.custom.games = normalizeSelection({ games: state.custom.games ?? [] }).games;
             if (!state.custom.manual || typeof state.custom.manual !== "object") state.custom.manual = null;
@@ -156,7 +206,7 @@ export function mount(root, { catalogPromise }) {
 const picker = (badge, ref, unit, attrs, tip) => `
   <div class="badge-pick">
     <div class="badge-head">
-      <span class="cat">${BADGES[badge].label}</span>
+      <span class="cat">${BADGES[badge].label}${badge === "time" ? infoButton(TIP.hours, "About Game Time") : ""}</span>
       <span class="badge-now"><b class="tier-name" data-ref="name-${badge}"></b>
         <span class="sent"><span class="have-plus" data-ref="plus-${badge}" hidden></span>
           <label class="mini-field" data-tip="${tip}"><input type="number" ${attrs} data-ref="${ref}" aria-label="${BADGES[badge].label}: new ${unit}"> ${unit}</label></span></span>
@@ -173,13 +223,13 @@ const optionRow = ([path, label, tip, min, max]) => min == null
     : `<label class="opt" data-tip="${tip}">${label}<input type="number" min="${min}" max="${max}" data-opt="${path}"></label>`;
 
 const markup = catalogSize => `
-<section class="have" aria-label="Already played">
+<section class="have" aria-label="Already played" data-ref="have">
   <span class="cat" data-tip="What Discord already counts for your badges. Everything you send adds to it.">Already played</span>
   ${haveField("variety", `step="1" inputmode="numeric"`, "Games already played", "games")}
   ${haveField("time", `step="0.1" inputmode="decimal"`, "Hours already played", "h")}
 </section>
 
-<div class="seg big" role="group" aria-label="Mode">
+<div class="seg big" role="group" aria-label="Mode" data-ref="modes">
   <button type="button" data-mode="random" data-tip="Pick the badge tiers you want. Random games from Discord's catalog get you there, like the original scripts.">Random</button>
   <button type="button" data-mode="custom" data-tip="Choose the games yourself: the top games of a vibe, or search. Then spread the hours.">Custom</button>
 </div>
@@ -195,8 +245,58 @@ const markup = catalogSize => `
   <details class="peek"><summary data-ref="rSummary" data-tip="See which games this pick sends"></summary><ol class="peek-list" data-ref="rList"></ol></details>
 </section>
 
+<section class="dz" data-pane="danger" hidden>
+  <div class="dz-side">
+    <fieldset class="dz-box">
+      <legend>Generate</legend>
+      <div class="dz-fields">
+        <label>Games <small data-ref="dOf"></small><input type="number" min="1" step="1" inputmode="numeric" data-ref="dCount" data-gen></label>
+        <label>Hours each<input type="number" min="0.1" max="${MAX_HOURS_EACH}" step="0.1" inputmode="decimal" data-ref="dHours" data-gen></label>
+        <label>Seed<input type="number" min="0" max="4294967295" step="1" inputmode="numeric" data-ref="dSeed" data-gen></label>
+        <label class="dz-check" data-tip="${TIP.dUntested}"><input type="checkbox" data-ref="dUntested">Include untested</label>
+      </div>
+      <div class="dz-buttons">
+        <button class="btn primary" type="button" data-action="d-generate" data-tip="Replace the table using these fields. Enter in a field does the same.">Generate</button>
+        <button class="btn" type="button" data-action="d-all" data-ref="dAll">All games</button>
+        <button class="btn" type="button" data-action="shuffle" data-tip="A new seed, then Generate">Shuffle</button>
+        <button class="btn" type="button" data-action="d-max" data-tip="Every game Discord lists, each with the most hours Game Time can count">Max everything</button>
+      </div>
+      <div class="dz-buttons"><span class="dz-label">Every row:</span>
+        <button class="btn" type="button" data-action="d-apply" data-tip="Set every row's hours to Hours each">Hours each</button>
+        <button class="btn" type="button" data-action="d-24" data-tip="The original Game Time script's final choice: 250 games × 24h">24h</button>
+        <button class="btn" type="button" data-action="d-since" data-ref="dSince">Max that counts</button>
+      </div>
+    </fieldset>
+    <fieldset class="dz-box">
+      <legend>Script options</legend>
+      <div class="dz-fields">
+        ${DANGER_OPTIONS.map(([path, label, max]) => max == null
+            ? `<label class="dz-check"><input type="checkbox" data-dopt="${path}">${label}</label>`
+            : `<label>${label}<input type="number" min="${path.endsWith("delayMs") ? 0 : 1}" max="${max}" step="1" inputmode="numeric" data-dopt="${path}"></label>`).join("\n        ")}
+        <label data-tip="${TIP.since}">Played since<input type="date" data-ref="dTrack"></label>
+      </div>
+    </fieldset>
+    <fieldset class="dz-box"><legend>Run (main script)</legend><dl class="dz-stats" data-ref="blast"></dl></fieldset>
+    <fieldset class="dz-box">
+      <legend>Scripts</legend>
+      ${OUTPUTS.map(o => `<div class="dz-script"><code>${o.file}</code><button class="btn" type="button" data-copy="${o.key}">Copy</button><button class="btn" type="button" data-download="${o.key}">Download</button></div>`).join("\n      ")}
+    </fieldset>
+    <fieldset class="dz-box"><legend>What Discord says</legend><ul class="fact-list" data-ref="facts"></ul></fieldset>
+  </div>
+  <div class="dz-main">
+    <div class="dz-toolbar"><span data-ref="dRows"></span><span class="dz-spacer"></span>
+      <button class="btn" type="button" data-action="d-copy-table">Copy table</button>
+      <button class="btn" type="button" data-action="d-clear" data-ref="dClear" data-tip="Empty the table">Clear</button>
+    </div>
+    <textarea class="dz-table" data-ref="dTable" spellcheck="false" autocomplete="off" wrap="off" aria-label="Game table: id, name, exe and hours, tab-separated" aria-describedby="dz-table-help"></textarea>
+    <p class="dz-help" id="dz-table-help">Edit anything: this is exactly what the scripts send, in this order. Tab inserts a tab; press Esc, then Tab, to move on.</p>
+    <ul class="dz-problems" data-ref="dProblems"></ul>
+    <details class="dz-box dz-preview" data-ref="dPreviewBox"><summary>Main script preview</summary><textarea class="dz-code" readonly spellcheck="false" wrap="off" data-ref="dPreview" aria-label="Main script"></textarea></details>
+  </div>
+</section>
+
 <section class="card" data-pane="custom">
-  <h3 class="cat">Hours</h3>
+  <h3 class="cat">Hours${infoButton(TIP.hours, "About hours")}</h3>
   <div class="row">
     <div class="seg grow" role="group" aria-label="Spread" data-ref="spread">
       <button type="button" data-spread="weighted" data-tip="More hours for the most played games, fewer for niche ones (by the square root of popularity)">Weighted</button>
@@ -229,7 +329,7 @@ const markup = catalogSize => `
   <ul class="list" data-ref="cList"></ul>
 </section>
 
-<details class="advanced">
+<details class="advanced" data-ref="advanced">
   <summary data-tip="Played-since date, import and export, script options and the two separate scripts">Advanced</summary>
   <div class="adv">
     <div class="adv-row"><span class="label" data-tip="${TIP.since}">Played since</span><input type="date" data-ref="trackStart" aria-label="Played since" data-tip="${TIP.since}">
@@ -272,6 +372,8 @@ function build(root, catalog, templates) {
     let minScore = 1;
     let latest = null;
     let cautions = 0; // Custom warnings that could cost a tier: they make Copy/Download ask twice
+    // "safe" or "danger": zone.js switches it (the red DBU in the sidebar) and announces it with a zonechange event.
+    let zone = document.body.dataset.zone === "danger" ? "danger" : "safe";
 
     root.innerHTML = markup(catalog.games.length);
 
@@ -335,6 +437,55 @@ function build(root, catalog, templates) {
         return randomCache.games;
     }
 
+    // ---------- Danger Zone: a free-form table ----------
+    // Generate fills it from a random pick (every game, or every tested one); after that it's plain text to edit.
+
+    let dangerText = null; // null until first generated
+    try { dangerText = localStorage.getItem(TABLE_KEY); } catch (_) {}
+    let dangerEdited = false; // typed into since the last Generate: Generate then asks twice
+    let tableTimer = null;
+    const saveTable = () => {
+        clearTimeout(tableTimer);
+        tableTimer = setTimeout(() => { try { localStorage.setItem(TABLE_KEY, dangerText ?? ""); } catch (_) {} }, 600);
+    };
+
+    const dangerPool = () => (state.danger.untested ? catalog.games : randomPool(catalog.games));
+    const dangerCount = () => Math.min(Math.floor(pos(state.danger.count, Infinity)), dangerPool().length);
+    const dangerHours = () => roundHours(Math.min(pos(state.danger.hours, 24), MAX_HOURS_EACH));
+    const maxCountable = () => Math.floor(countableHours() * 10) / 10;
+
+    function setTable(text, { edited = false } = {}) {
+        dangerText = text;
+        dangerEdited = edited;
+        ref.dTable.value = text;
+        saveTable();
+        changed({ now: true });
+        renderDanger();
+    }
+
+    function generateTable() {
+        const { seed, untested } = state.danger;
+        const hours = dangerHours();
+        const games = pickRandom(catalog.games, { count: dangerCount(), seed, all: untested });
+        setTable([TABLE_HEAD, ...games.map(g => [g.id, cleanCell(g.name), cleanCell(g.exe), hours].join("\t"))].join("\n") + "\n");
+    }
+
+    // Sets the hours column on every data line; keeps everything else as typed.
+    function applyHours(hours) {
+        state.danger.hours = hours;
+        const lines = (dangerText ?? "").split("\n").map(line => {
+            const cells = line.split("\t");
+            return /^\s*\d+\s*$/.test(cells[0]) && cells.length >= 3 ? [...cells.slice(0, 3), hours, ...cells.slice(4)].join("\t") : line;
+        });
+        setTable(lines.join("\n"), { edited: dangerEdited });
+    }
+
+    let parsedCache = null;
+    function parsedTable() {
+        if (parsedCache?.text !== dangerText) parsedCache = { text: dangerText, ...parseTable(dangerText ?? "", id => byId.get(id)?.name) };
+        return parsedCache;
+    }
+
     function currentSelection() {
         if (state.mode === "random") {
             const picked = randomGames();
@@ -347,8 +498,58 @@ function build(root, catalog, templates) {
     // ---------- render ----------
 
     function renderMode() {
+        const danger = zone === "danger";
         for (const b of root.querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
-        for (const p of root.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== state.mode;
+        for (const p of root.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== (danger ? "danger" : state.mode);
+        ref.have.hidden = danger;
+        ref.modes.hidden = danger;
+        ref.advanced.hidden = danger;
+    }
+
+    function renderDanger() {
+        const d = state.danger;
+        const poolSize = dangerPool().length;
+        const countable = maxCountable();
+        setValue(ref.dCount, dangerCount());
+        setValue(ref.dHours, dangerHours());
+        setValue(ref.dSeed, d.seed);
+        ref.dUntested.checked = !!d.untested;
+        ref.dOf.textContent = `of ${formatCount(poolSize)}`;
+        ref.dAll.dataset.tip = `Generate all ${formatCount(poolSize)} ${d.untested ? "games Discord lists" : "games with a real Windows executable"}`;
+        ref.dSince.dataset.tip = `${hrs(countable)}h: all the time since ${GAME_TIME_SINCE}, the day Game Time starts counting`;
+        if (dangerText != null && ref.dTable.value !== dangerText && document.activeElement !== ref.dTable) ref.dTable.value = dangerText;
+        for (const input of root.querySelectorAll("[data-dopt]")) {
+            const value = input.dataset.dopt.split(".").reduce((o, k) => o?.[k], d.options);
+            if (input.type === "checkbox") input.checked = !!value;
+            else setValue(input, value);
+        }
+        setValue(ref.dTrack, state.trackStart ?? "");
+        ref.facts.innerHTML = [
+            `Game Time only counts time played on or after 8 December 2025: at most ${hrs(countable)}h for one session today.`,
+            "Only the Discord desktop app counts, and only with “Use data to personalize my Discord experience” on."
+        ].map(text => `<li>${esc(text)}</li>`).join("") +
+            `<li class="source">Source: <a href="${HELP_URL}" target="_blank" rel="noopener noreferrer">Discord's help article on profile badges</a></li>`;
+    }
+
+    // What the table adds up to, and what a run of the main script takes.
+    function renderBlast(summary, problems) {
+        const o = state.danger.options;
+        const n = summary.games;
+        const requests = Math.ceil(n / o.batchSize);
+        const varietyRequests = Math.ceil(n / o.variety.batchSize);
+        const stats = [
+            ["Games", formatCount(n)],
+            ["Total hours", `${compact(summary.totalHours)}h`],
+            ["Past Eternal (5,000h)", summary.totalHours > TIERS.hours ? `×${compact(Math.floor(summary.totalHours / TIERS.hours))}` : "—"],
+            ["Untested games", formatCount(summary.untested)],
+            ["Requests", formatCount(requests)],
+            ["Events", formatCount(n * 3)],
+            ["Delays alone", span(Math.max(0, requests - 1) * o.delayMs)],
+            ["Variety script delays", span(Math.max(0, varietyRequests - 1) * o.variety.delayMs)],
+            ["Script size", latest ? bytes(latest.main.text.length) : "—"]
+        ];
+        ref.blast.innerHTML = stats.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("");
+        ref.dRows.textContent = `${plural(n, "row")} · ${compact(summary.totalHours)}h${problems ? ` · ${plural(problems, "problem")}` : ""}`;
     }
 
     // ---------- random: tier goals (the maths lives in core.mjs) ----------
@@ -524,6 +725,7 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
 
     function renderAdvanced() {
         ref.trackStart.value = state.trackStart ?? "";
+        setValue(ref.dTrack, state.trackStart ?? "");
         renderUseWindowTip();
         for (const input of root.querySelectorAll("[data-opt]")) {
             const value = input.dataset.opt.split(".").reduce((o, k) => o?.[k], state.options);
@@ -567,7 +769,7 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     }
 
     function renderPills(summary) {
-        const custom = state.mode === "custom";
+        const custom = state.mode === "custom" || zone === "danger";
         const sent = { variety: summary.games, time: summary.totalHours };
         const values = totals(sent);
         for (const badge of BADGE_KEYS) {
@@ -583,30 +785,59 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     }
 
     // The 50 KB+ preview only fills while it's open (and when it opens).
-    const renderPreview = () => { if (ref.previewBox.open) ref.preview.value = latest ? latest.main.text : ""; };
+    const renderPreview = () => {
+        for (const [box, area] of [[ref.previewBox, ref.preview], [ref.dPreviewBox, ref.dPreview]]) {
+            if (box.open) area.value = latest ? latest.main.text : "";
+        }
+    };
 
-    function renderOutput() {
-        const notes = [];
+    // Random and Custom: the selection, resolved against the catalog.
+    function resolvedTable(notes, custom) {
         let resolved = null;
         try {
             resolved = resolveSelection(catalog.games, currentSelection());
         } catch (error) {
             notes.push({ level: "error", text: error.message });
         }
-        const custom = state.mode === "custom";
         if (custom && spreadError) notes.push({ level: "error", text: spreadError });
-        const table = resolved?.table ?? [];
         if (resolved) {
             const name = e => e.name ?? e.id;
             if (resolved.missing.length) notes.push({ level: "error", text: `Not in Discord's catalog: ${resolved.missing.map(name).join(", ")}` });
             if (resolved.ambiguous.length) notes.push({ level: "error", text: `Ambiguous: ${resolved.ambiguous.map(name).join(", ")}` });
             if (resolved.invalid.length) notes.push({ level: "error", text: `Hours must be at least 0.1: ${resolved.invalid.map(name).join(", ")}` });
         }
+        return resolved?.table ?? [];
+    }
+
+    // Danger Zone: the table as typed. Ids outside Discord's catalog are allowed.
+    function dangerTable(notes) {
+        const { rows, problems } = parsedTable();
+        if (problems.length) {
+            notes.push({ level: "error", text: `${plural(problems.length, "line")} in the table can't be used. See the list under the table.` });
+        }
+        ref.dProblems.innerHTML = problems.slice(0, 200).map(text => `<li>${esc(text)}</li>`).join("") +
+            (problems.length > 200 ? `<li>and ${formatCount(problems.length - 200)} more</li>` : "");
+        const unknown = rows.filter(row => !byId.has(row.id)).length;
+        if (unknown) notes.push({ level: "info", text: `${plural(unknown, "id")} in the table ${unknown === 1 ? "isn't" : "aren't"} in Discord's catalog.` });
+        return rows;
+    }
+
+    function renderOutput() {
+        const notes = [];
+        const danger = zone === "danger";
+        const custom = !danger && state.mode === "custom";
+        const table = danger ? dangerTable(notes) : resolvedTable(notes, custom);
         const check = validateTable(table, { trackStart: state.trackStart });
-        if (table.length) for (const text of check.errors) notes.push({ level: "error", text });
-        for (const w of check.warnings) if (w.kind === "window") notes.push({ level: "warn", text: w.text });
+        if (table.length) {
+            for (const text of check.errors.slice(0, 10)) notes.push({ level: "error", text });
+            if (check.errors.length > 10) notes.push({ level: "error", text: `and ${formatCount(check.errors.length - 10)} more problems like these` });
+        }
+        // "since": a session reaching back before 8 December 2025 (Discord's start date for Game Time).
+        for (const w of check.warnings) if (w.kind === "window" || w.kind === "since") notes.push({ level: "warn", text: w.text });
 
         const summary = summarize(table);
+        if (!danger && table.length) notes.push(...pastTopTiers(summary));
+        if (danger && table.length) notes.push(...dangerNotes(table));
         const care = custom && table.length ? customCautions(table, summary) : [];
         for (const { text, info } of care) notes.push({ level: "warn", text, info });
         cautions = care.filter(c => c.confirm).length;
@@ -622,7 +853,9 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
 
         latest = null;
         if (table.length && check.ok && !notes.some(n => n.level === "error")) {
-            latest = renderScripts(table, { trackStart: state.trackStart, options: state.options }, templates);
+            latest = danger
+                ? renderScripts(table, { trackStart: state.trackStart, options: state.danger.options, uncapped: true }, templates)
+                : renderScripts(table, { trackStart: state.trackStart, options: state.options }, templates);
         }
         const blocked = !table.length ? "Add some games first" : "Fix the notes above first";
         for (const b of scriptButtons) {
@@ -635,25 +868,51 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         }
         for (const code of fileLabels) code.textContent = latest ? latest[code.dataset.file].file : "";
         renderPreview();
+        if (danger) renderBlast({ ...summary, untested: table.filter(row => untested(row.id)).length }, parsedTable().problems.length);
+    }
+
+    // Past the spare above a top tier (110 games, 5,500h): more doesn't raise the badge.
+    function pastTopTiers(summary) {
+        const values = totals({ variety: summary.games, time: summary.totalHours });
+        const out = [];
+        if (values.variety > tierAim("variety", topTier("variety"))) {
+            out.push({ level: "info", text: `${formatCount(values.variety)} games${state.have.games ? " in all" : ""} is past Game Variety's top tier ` +
+                `(Universalist, ${TIERS.games} games). Games past it don't raise the badge.` });
+        }
+        if (values.time > tierAim("time", topTier("time"))) {
+            out.push({ level: "info", text: `${hrs(values.time)}h${state.have.hours ? " in all" : ""} is past Game Time's top tier ` +
+                `(Eternal, ${formatCount(TIERS.hours)}h). Hours past it don't raise the badge.` });
+        }
+        return out;
+    }
+
+    function dangerNotes(table) {
+        const out = [];
+        const risky = table.filter(row => untested(row.id));
+        if (risky.length) {
+            out.push({ level: "info", info: TIP.untested,
+                text: `${formatCount(risky.length)} of these games are untested: Discord lists no Windows executable for them.` });
+        }
+        return out;
     }
 
     let outputTimer = null;
-    function changed({ custom = false, random = false, now = false } = {}) {
+    function changed({ custom = false, random = false, now = false, wait = 120 } = {}) {
         disarm();
         if (state.mode === "custom" || custom) respread();
         save();
         if (custom) renderCustom();
         if (random) renderRandom();
         clearTimeout(outputTimer);
-        outputTimer = setTimeout(renderOutput, now ? 0 : 120);
+        outputTimer = setTimeout(renderOutput, now ? 0 : wait);
     }
 
     let toastTimer = null;
-    function toast(text) {
+    function toast(text, ms = 3200) {
         ref.toast.textContent = text;
         ref.toast.hidden = false;
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { ref.toast.hidden = true; }, 3200);
+        toastTimer = setTimeout(() => { ref.toast.hidden = true; }, ms);
     }
 
     // ---------- random: tiers ----------
@@ -733,7 +992,7 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     }
     root.addEventListener("toggle", event => {
         if (!(event.target instanceof HTMLDetailsElement) || !event.target.open) return;
-        if (event.target === ref.previewBox) renderPreview();
+        if (event.target === ref.previewBox || event.target === ref.dPreviewBox) renderPreview();
         requestAnimationFrame(() => reveal(event.target));
     }, true);
 
@@ -833,10 +1092,14 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             const key = d.copy ?? d.download;
             const out = latest?.[key];
             if (!out) return;
-            if (state.mode === "custom" && cautions
+            if (zone === "safe" && state.mode === "custom" && cautions
                 && !confirmed(target, d.copy ? "Copy anyway?" : "Save anyway?", "Check the warnings above first. Click again to go ahead.")) return;
-            if (d.copy) { if (await copyText(out.text)) toast("Copied. Paste it in Discord's console (Ctrl+Shift+I)."); }
-            else download(out.file, out.text);
+            if (d.copy) {
+                if (await copyText(out.text)) toast(`Copied. Paste it ${TIP.run}`, 9000);
+            } else {
+                download(out.file, out.text);
+                toast(`Saved ${out.file}. Paste its contents ${TIP.run}`, 9000);
+            }
         } else if (d.action) {
             await runAction(d.action, target);
         }
@@ -851,8 +1114,27 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
                 syncGoal();
                 changed({ random: true, now: true });
             } else if (action === "shuffle") {
-                state.random.seed = newSeed();
-                changed({ random: true, now: true });
+                if (zone === "danger") {
+                    if (dangerEdited && !confirmed(button, "Replace your edits?", "Click again to replace the edited table")) return;
+                    state.danger.seed = newSeed();
+                    generateTable();
+                } else {
+                    state.random.seed = newSeed();
+                    changed({ random: true, now: true });
+                }
+            } else if (["d-generate", "d-all", "d-max"].includes(action)) {
+                if (dangerEdited && !confirmed(button, "Replace your edits?", "Click again to replace the edited table")) return;
+                const d = state.danger;
+                if (action !== "d-generate") d.count = null;
+                if (action === "d-max") Object.assign(d, { untested: true, hours: maxCountable() });
+                generateTable();
+            } else if (action === "d-apply" || action === "d-24" || action === "d-since") {
+                applyHours(action === "d-24" ? 24 : action === "d-since" ? maxCountable() : dangerHours());
+            } else if (action === "d-clear") {
+                if (!confirmed(button, "Clear the table?", "Click again to empty the table")) return;
+                setTable(TABLE_HEAD + "\n", { edited: true });
+            } else if (action === "d-copy-table") {
+                if (await copyText(dangerText ?? "")) toast("Copied the table (tab-separated).");
             } else if (action === "presets") {
                 setPresets(ref.presetsMenu.hidden);
             } else if (action === "add-vibe") {
@@ -935,6 +1217,25 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             if (entry) entry.hours = Number(t.value);
             ref.cTotal.value = sumHours(state.custom.games);
             changed();
+        } else if (t === ref.dTable) {
+            dangerText = t.value;
+            dangerEdited = true;
+            saveTable();
+            changed({ wait: 400 });
+        } else if (t.dataset.gen != null || t === ref.dUntested) {
+            const d = state.danger;
+            if (t === ref.dCount) d.count = Math.floor(pos(t.value, d.count ?? Infinity));
+            if (t === ref.dHours) d.hours = Math.min(pos(t.value, d.hours), MAX_HOURS_EACH);
+            if (t === ref.dSeed && t.value !== "" && Number.isFinite(Number(t.value))) d.seed = Number(t.value) >>> 0;
+            if (t === ref.dUntested) d.untested = t.checked;
+            save();
+            renderDanger();
+        } else if (t.dataset.dopt) {
+            const path = t.dataset.dopt.split(".");
+            const draft = structuredClone(state.danger.options);
+            (path.length > 1 ? draft[path[0]] : draft)[path.at(-1)] = t.type === "checkbox" ? t.checked : Number(t.value);
+            state.danger.options = normalizeOptions(draft, { uncapped: true });
+            changed();
         } else if (t === ref.search) {
             renderResults();
         } else if (t.dataset.opt) {
@@ -961,12 +1262,35 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             t.value = "";
         } else if (t === ref.rCount || t === ref.rHours) {
             renderRandom(); // show the stored number again if the field was left empty or invalid
+        } else if (t === ref.dTrack) {
+            state.trackStart = t.value || null;
+            renderAdvanced();
+            changed({ now: true });
+        } else if (t.dataset.gen != null || t.dataset.dopt) {
+            renderDanger();
         } else if (t === ref["have-variety"] || t === ref["have-time"]) {
             renderHave();
         } else if (t.dataset.opt) {
             renderAdvanced();
         }
     });
+
+    root.addEventListener("keydown", event => {
+        const t = event.target;
+        if (event.key === "Enter" && t.dataset?.gen != null) {
+            event.preventDefault();
+            root.querySelector('[data-action="d-generate"]').click();
+        }
+    });
+    let tabEscaped = false;
+    ref.dTable.addEventListener("keydown", event => {
+        if (event.key === "Escape") { tabEscaped = true; return; }
+        if (event.key !== "Tab" || event.shiftKey || tabEscaped || event.ctrlKey || event.altKey || event.metaKey) { tabEscaped = false; return; }
+        event.preventDefault();
+        if (!document.execCommand?.("insertText", false, "\t")) ref.dTable.setRangeText("\t", ref.dTable.selectionStart, ref.dTable.selectionEnd, "end");
+        ref.dTable.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    ref.dTable.addEventListener("blur", () => { tabEscaped = false; });
 
     ref.search.addEventListener("keydown", event => {
         const items = [...ref.results.querySelectorAll("[data-add]")];
@@ -1005,5 +1329,18 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     respread();
     renderCustom();
     renderAdvanced();
+    renderDanger();
+    if (zone === "danger" && dangerText == null) generateTable();
     renderOutput();
+
+    document.addEventListener("zonechange", event => {
+        zone = event.detail?.zone === "danger" ? "danger" : "safe";
+        disarm();
+        setPresets(false);
+        ref.results.hidden = true;
+        renderMode();
+        if (zone === "danger" && dangerText == null) generateTable();
+        else if (zone === "danger") renderDanger();
+        changed({ now: true });
+    });
 }

@@ -26,6 +26,11 @@ export const BADGE_TIERS = Object.freeze({
 // The top tiers (100 games, 5,000h), as in the original repo's README.
 export const TIERS = Object.freeze({ games: BADGE_TIERS.variety.at(-1).min, hours: BADGE_TIERS.time.at(-1).min });
 
+// Discord's help article: "Game Time includes time played on or after December 8, 2025."
+// A session that starts earlier reaches back past what the badge counts.
+export const GAME_TIME_SINCE = "2025-12-08";
+export const countableHours = (now = Date.now()) => hoursSince(GAME_TIME_SINCE, now);
+
 // The highest tier `value` games (variety) or hours (time) reaches, as an index; -1 for none.
 export const tierFor = (badge, value) => BADGE_TIERS[badge].findLastIndex(tier => Number(value) >= tier.min);
 
@@ -404,7 +409,7 @@ export function resolveSelection(games, selection) {
 
 export const summarize = table => ({ games: table.length, totalHours: sumHours(table) });
 
-// warnings: [{ kind: "variety" | "time" | "window", text }]
+// warnings: [{ kind: "variety" | "time" | "since" | "window", text }]
 export function validateTable(table, { trackStart = null, now = Date.now() } = {}) {
     const errors = [];
     const warnings = [];
@@ -423,6 +428,12 @@ export function validateTable(table, { trackStart = null, now = Date.now() } = {
     }
     if (totalHours > TIERS.hours) {
         warnings.push({ kind: "time", text: `${formatHours(totalHours)}h is past the ${formatCount(TIERS.hours)}h Game Time ceiling; extra hours don't raise the badge.` });
+    }
+    const countable = countableHours(now);
+    const early = table.filter(row => row.hours > countable);
+    if (early.length) {
+        warnings.push({ kind: "since", text: `${formatCount(early.length)} games have more than the ${formatHours(Math.floor(countable * 10) / 10)}h since ` +
+            `${GAME_TIME_SINCE}; Game Time only counts time played on or after that day, and a longer session starts before it.` });
     }
     if (trackStart) {
         const available = hoursSince(trackStart, now);
@@ -532,8 +543,9 @@ function mulberry32(seed) {
     };
 }
 
-export function pickRandom(games, { count = 125, seed = 1 } = {}) {
-    const pool = randomPool(games);
+// all: draw from every game, untested ones included (the Danger Zone); otherwise from randomPool.
+export function pickRandom(games, { count = 125, seed = 1, all = false } = {}) {
+    const pool = all ? games : randomPool(games);
     const n = Math.max(0, Math.min(Math.floor(count), pool.length));
     const order = pool.map((_, i) => i);
     const rand = mulberry32(seed);

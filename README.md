@@ -1,5 +1,7 @@
 # Discord Badge Unlocker
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
 
 > [!WARNING]
@@ -35,6 +37,21 @@ npm start
 ```
 
 Open <http://127.0.0.1:8080/> and click **Load generator**.
+
+## What's known about the badges
+
+From Discord's own help article, [Discord Profile Badges: What Each Badge Means](https://support.discord.com/hc/en-us/articles/44369363856663):
+
+- Only the Discord desktop app counts, not the web version.
+- Progress only counts with **Use data to personalize my Discord experience** turned on.
+- Game Time counts time played on or after **8 December 2025**. A session longer than the time since then starts before it.
+
+Consistent across independent sources:
+
+- **Tiers.** Game Variety: 2, 5, 10, 15, 20, 30, 40, 60, 80 and 100 games (Universalist). Game Time: 1, 5, 20, 75, 150, 300, 500, 1,000, 2,000 and 5,000 hours (Eternal). These match the badge timeline in the Discord app, [DiscordPreviews](https://x.com/DiscordPreviews/status/2082864614371467681) and badge guides. Nothing past the top tier raises a badge.
+- **Update time.** Badges update about 1–2 days after a run, as reported on the [original project](https://github.com/everyoneexe/discord-game-badge-presence/issues/2) and by several similar ones.
+
+The page warns when your numbers go past these limits. Anything less certain, like whether games Discord lists no Windows executable for count, is marked untested.
 
 ## Agent skill
 

@@ -33,18 +33,25 @@ const int = (value, fallback, min, max) => {
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 };
 
-export function normalizeOptions(input = {}) {
+// Option limits. `uncapped` (the page's Danger Zone) widens them to what the scripts can still run with.
+const LIMITS = {
+    capped: { batchSize: 100, delayMs: 60000, varietyBatchSize: 50, rotateMinutes: 1440 },
+    uncapped: { batchSize: 100000, delayMs: 86400000, varietyBatchSize: 100000, rotateMinutes: 525600 }
+};
+
+export function normalizeOptions(input = {}, { uncapped = false } = {}) {
     const o = input && typeof input === "object" ? input : {};
     const v = o.variety && typeof o.variety === "object" ? o.variety : {};
     const d = DEFAULT_OPTIONS;
+    const max = uncapped ? LIMITS.uncapped : LIMITS.capped;
     return {
-        batchSize: int(o.batchSize, d.batchSize, 1, 100),
-        delayMs: int(o.delayMs, d.delayMs, 0, 60000),
+        batchSize: int(o.batchSize, d.batchSize, 1, max.batchSize),
+        delayMs: int(o.delayMs, d.delayMs, 0, max.delayMs),
         dryRun: o.dryRun === true,
         variety: {
-            batchSize: int(v.batchSize, d.variety.batchSize, 1, 50),
-            delayMs: int(v.delayMs, d.variety.delayMs, 0, 60000),
-            rotateMinutes: int(v.rotateMinutes, d.variety.rotateMinutes, 1, 1440),
+            batchSize: int(v.batchSize, d.variety.batchSize, 1, max.varietyBatchSize),
+            delayMs: int(v.delayMs, d.variety.delayMs, 0, max.delayMs),
+            rotateMinutes: int(v.rotateMinutes, d.variety.rotateMinutes, 1, max.rotateMinutes),
             keepRotating: v.keepRotating === true
         }
     };
@@ -187,6 +194,8 @@ function renderHeader(output, table, trackStart, options) {
     lines.push("");
     lines.push("Run: Discord desktop > Ctrl+Shift+I > Console > paste > Enter.");
     lines.push("If the console asks, type: allow pasting");
+    lines.push("Only the desktop app counts, and only with Settings > \"Use data to personalize");
+    lines.push("my Discord experience\" on. Game Time counts time from 2025-12-08 on.");
     if (output.engine === "telemetry") {
         lines.push("Sends each game once, with its hours, through Discord's own HTTP client.");
         lines.push("It never reads your token. Games already sent to this account are skipped.");
@@ -220,8 +229,8 @@ function fill(template, header, config, block) {
 }
 
 // table: [{ id, name, exe, hours }] (already resolved and sorted), templates: from loadTemplates().
-export function renderScripts(table, { trackStart = null, options = {} } = {}, templates) {
-    const opts = normalizeOptions(options);
+export function renderScripts(table, { trackStart = null, options = {}, uncapped = false } = {}, templates) {
+    const opts = normalizeOptions(options, { uncapped });
     const block = renderTableBlock(table, { trackStart });
     const out = {};
     for (const output of OUTPUTS) {

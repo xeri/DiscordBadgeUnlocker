@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    BADGE_TIERS, TIERS, catalogIndex, countByVibe, fitTier, formatCount, formatHours, minHours, normalizeCatalog,
+    BADGE_TIERS, TIERS, catalogIndex, countByVibe, countableHours, fitTier, formatCount, formatHours, minHours, normalizeCatalog,
     normalizeSelection, parseCatalog, pickFromRanking, pickRandom, randomPool, resolveSelection, scaleTo, searchCatalog,
     sendGames, sendHours, serializeCatalog, splitEvenly, sumHours, summarize, tierAim, tierFor, validateTable, vibesFor
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
@@ -262,4 +262,27 @@ test("renderScripts is deterministic and shares one table block", async () => {
     for (const key of ["variety", "gameTime"]) assert.equal(block(a[key].text), block(a.main.text));
     assert.ok(a.main.text.includes("dryRun: true"));
     assert.ok(!Object.values(a).some(s => s.text.includes("Math.random")));
+});
+
+// ---------- Discord's limits and the Danger Zone ----------
+
+test("Game Time only counts time from 2025-12-08 on", () => {
+    const now = Date.UTC(2026, 10, 1);
+    assert.equal(countableHours(now), 7872); // 328 days
+    const table = [{ id: "1", name: "Long", exe: "a.exe", hours: 8000 }, { id: "2", name: "Short", exe: "b.exe", hours: 24 }];
+    const since = validateTable(table, { now }).warnings.filter(w => w.kind === "since");
+    assert.equal(since.length, 1);
+    assert.match(since[0].text, /^1 games have more than the 7,872\.0h since 2025-12-08/);
+});
+
+test("pickRandom can draw from every game, untested ones included", () => {
+    const all = pickRandom(CATALOG, { count: 100, seed: 3, all: true });
+    assert.equal(all.length, CATALOG.length);
+    assert.ok(all.some(g => g.noExe));
+});
+
+test("uncapped options keep the scripts' wider limits", () => {
+    assert.equal(normalizeOptions({ batchSize: 500 }).batchSize, 100);
+    assert.equal(normalizeOptions({ batchSize: 500 }, { uncapped: true }).batchSize, 500);
+    assert.equal(normalizeOptions({ variety: { rotateMinutes: 1e9 } }, { uncapped: true }).variety.rotateMinutes, 525600);
 });

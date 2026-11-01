@@ -68,6 +68,11 @@ const preloadGenerator = () => (generatorModule ??= import("./generator.js"));
 const idle = window.requestIdleCallback ?? (cb => setTimeout(cb, 400));
 idle(() => { preloadGenerator().catch(() => { generatorModule = null; }); }, { timeout: 2500 });
 
+// Entering the Danger Zone (assets/zone.js) before the generator is open opens it.
+document.addEventListener("zonechange", event => {
+    if (event.detail?.zone === "danger" && !start.hidden && !button.disabled) button.click();
+});
+
 button.addEventListener("click", async () => {
     button.disabled = true;
     button.textContent = "Loading…";

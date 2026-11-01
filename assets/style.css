@@ -80,9 +80,20 @@ button, input { font: inherit; color: inherit; }
 
 /* shell: rail + panel */
 .shell { flex: 1; min-height: 0; display: flex; }
-.rail { width: 72px; flex: none; display: flex; justify-content: center; align-items: flex-start; padding-top: 8px; position: relative; }
-.rail-icon { width: 40px; height: 40px; display: block; }
-.rail-pill { position: absolute; left: 0; top: 16px; width: 4px; height: 24px; border-radius: 0 4px 4px 0; background: var(--text-strong); }
+/* rail: blue DBU (safe) and red DBU (Danger Zone); the pill marks the open one, like Discord's server list */
+.rail { width: 72px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 8px; }
+.rail-item { position: relative; width: 100%; display: flex; justify-content: center; }
+.rail-pill {
+    position: absolute; left: 0; top: 50%; width: 4px; height: 8px; margin-top: -4px; border-radius: 0 4px 4px 0;
+    background: var(--text-strong); transform: scale(0); transition: transform 0.15s, height 0.15s, margin-top 0.15s;
+}
+.rail-item:hover .rail-pill { transform: none; height: 20px; margin-top: -10px; }
+.rail-item:has([aria-pressed="true"]) .rail-pill { transform: none; height: 40px; margin-top: -20px; }
+.rail-btn { display: block; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 12px; background: none; cursor: pointer; }
+.rail-btn img { width: 40px; height: 40px; display: block; transition: transform 0.15s; }
+.rail-btn:hover img { transform: translateY(-1px); }
+.rail-sep { width: 32px; height: 2px; border-radius: 1px; background: var(--border); }
+.title-danger { display: none; }
 .panel {
     flex: 1; min-width: 0;
     background: var(--base-lower);
@@ -308,7 +319,7 @@ textarea.preview {
 .tier.none::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .actions { display: flex; gap: 8px; }
 .toast {
-    position: absolute; right: 16px; bottom: calc(100% + 8px);
+    position: absolute; right: 16px; bottom: calc(100% + 8px); max-width: min(420px, calc(100% - 32px));
     padding: 8px 12px; border-radius: var(--r); background: var(--surface-highest); border: 1px solid var(--border-subtle);
     box-shadow: var(--shadow); font-size: 14px; color: var(--text-strong);
 }
@@ -369,6 +380,8 @@ body:has(> .gate) { overflow: hidden; }
     body { display: block; height: auto; min-height: 100%; overflow: visible; } /* grows with the page, so the title bar stays stuck */
     .shell { min-height: calc(100dvh - 36px); }
     .rail { display: none; }
+    .danger-actions { width: 100%; }
+    .danger-actions .btn { flex: 1; }
     .panel { overflow: visible; border-left: 0; border-top-left-radius: 0; }
     .content { padding-top: 16px; }
     .actions { width: 100%; }
@@ -385,4 +398,124 @@ body:has(> .gate) { overflow: hidden; }
     .have .cat { width: 100%; }
     .have-field { flex: 1 1 0; min-width: 0; }
     .have-field input { flex: 1; width: 0; min-width: 0; }
+}
+
+/* ---------- Danger Zone (assets/zone.js): red theme, gate, header, pane ---------- */
+body[data-zone="danger"] {
+    --base-lowest: #1f1c1d;
+    --base-lower: #252122;
+    --base-low: #2a2526;
+    --surface-high: #2d2829;
+    --surface-highest: #373132;
+    --floating: #141213;
+    --tint-resting: rgba(210, 150, 150, 0.06);
+    --tint-hover: rgba(210, 150, 150, 0.1);
+    --tint-pressed: rgba(210, 150, 150, 0.14);
+    --tint-selected: rgba(210, 150, 150, 0.18);
+    --border-muted: rgba(220, 150, 150, 0.05);
+    --border-subtle: rgba(220, 150, 150, 0.12);
+    --border: rgba(220, 150, 150, 0.2);
+    --input: rgba(0, 0, 0, 0.16);
+    --text-2: #d4cacb;
+    --muted: #a99c9d;
+    --link: #e2a3a5;
+    --brand-text: #e2a3a5;
+    --blurple: #a8474b;
+    --blurple-hover: #923c40;
+    --blurple-soft: rgba(168, 71, 75, 0.25);
+    --hot: #d4676b;
+}
+body, .titlebar, .panel, .card, .adv, .dock { transition: background-color 0.35s ease, border-color 0.35s ease; }
+
+body[data-zone="danger"] .title-safe { display: none; }
+body[data-zone="danger"] .title-danger {
+    display: inline; font-size: 17px; font-weight: 900; letter-spacing: 0.16em; color: var(--hot);
+}
+body[data-zone="danger"] .title-danger::before { content: "⚠ "; color: #f0b232; }
+
+/* gate: a modal <dialog>; tick the box, then hold the red button */
+.danger-gate {
+    width: min(680px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px);
+    padding: 0; border: 0; background: none; color: var(--text); overflow: visible;
+}
+.danger-gate::backdrop { background: rgba(0, 0, 0, 0.6); }
+.danger-gate[open] { animation: danger-in 0.5s ease-out; }
+@keyframes danger-in {
+    0% { opacity: 0; transform: scale(0.92); }
+    35% { opacity: 1; transform: translateX(-8px); }
+    50% { transform: translateX(7px); }
+    65% { transform: translateX(-4px); }
+    80% { transform: translateX(2px); }
+    100% { transform: none; }
+}
+.danger-gate .gate-card {
+    margin: 0; max-height: calc(100dvh - 32px); overflow-y: auto;
+    background: #252122; border: 1px solid #a8474b;
+}
+.danger-gate-text { display: flex; align-items: center; gap: 12px; margin: 0; font-size: 18px; font-weight: 600; color: var(--text-strong); }
+.danger-gate-text svg { flex: none; color: #d4676b; }
+.danger-gate .gate-check input { accent-color: #a8474b; }
+.danger-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.hold-btn {
+    position: relative; overflow: hidden; min-width: 190px; background: #a8474b; border-color: transparent; color: #fff;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.hold-btn:hover { background: #923c40; }
+.hold-btn:disabled { opacity: 0.45; }
+.hold-fill { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.42); transform: scaleX(0); transform-origin: left; }
+.hold-btn.holding .hold-fill { transform: scaleX(1); transition: transform 1s linear; }
+.hold-label { position: relative; }
+
+/* the Danger Zone console: full width, compact boxes */
+body[data-zone="danger"] .content { max-width: none; padding: 8px 12px 0; }
+body[data-zone="danger"] .gen { gap: 8px; padding-bottom: 8px; }
+body[data-zone="danger"] .dock { margin: 0 -12px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
+body[data-zone="danger"] .notes { font-size: 13px; }
+.dz { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 8px; align-items: start; }
+.dz-side, .dz-main { display: grid; gap: 8px; min-width: 0; }
+.dz-box {
+    margin: 0; padding: 6px 10px 10px; min-width: 0; display: grid; gap: 8px; font-size: 13px;
+    background: var(--surface-high); border: 1px solid var(--border-subtle); border-radius: 4px;
+}
+.dz-box legend { padding: 0 4px; margin-left: -4px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.dz-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; }
+.dz-fields label { display: grid; gap: 2px; min-width: 0; font-size: 12px; color: var(--muted); }
+.dz-fields small { font-size: 11px; }
+.dz-fields input[type="number"], .dz-fields input[type="date"] { width: 100%; height: 28px; padding: 0 6px; border-radius: 4px; font: 13px/1 var(--mono); color: var(--text); }
+.dz-fields .dz-check { display: flex; align-items: center; gap: 6px; color: var(--text-2); cursor: pointer; }
+.dz-check input { margin: 0; accent-color: var(--blurple); }
+.dz-buttons, .dz-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dz .btn { height: 26px; padding: 0 8px; border-radius: 4px; font-size: 12px; }
+.dz-label { margin-right: 2px; font-size: 12px; color: var(--muted); }
+.dz-stats { margin: 0; display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-size: 12px; }
+.dz-stats div { display: contents; }
+.dz-stats dt { color: var(--muted); }
+.dz-stats dd { margin: 0; text-align: right; font: 12px/1.5 var(--mono); color: var(--text-strong); }
+.dz-script { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.dz-script code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--text-2); }
+.dz-toolbar { font: 12px var(--mono); color: var(--muted); }
+.dz-spacer { flex: 1; }
+.dz-table, .dz-code {
+    width: 100%; padding: 6px 8px; resize: vertical; white-space: pre; tab-size: 4;
+    background: var(--input); border: 1px solid var(--border-subtle); border-radius: 4px; color: var(--text);
+}
+.dz-table { height: calc(100dvh - 230px); min-height: 320px; font: 12px/1.5 var(--mono); }
+.dz-table:focus { outline: none; border-color: var(--blurple); }
+.dz-code { height: 320px; margin-top: 6px; font: 11px/1.5 var(--mono); color: var(--text-2); }
+.dz-help { margin: 0; font-size: 12px; color: var(--muted); }
+.dz-problems { margin: 0; padding: 0; list-style: none; max-height: 120px; overflow: auto; font: 12px/1.5 var(--mono); color: var(--error); }
+.dz-problems:empty { display: none; }
+.dz-preview { gap: 0; padding-top: 6px; }
+.dz-preview summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.fact-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
+.fact-list .source { list-style: none; margin-left: -18px; color: var(--muted); }
+.fact-list a { color: var(--link); }
+@media (max-width: 900px) {
+    .dz { grid-template-columns: minmax(0, 1fr); }
+    .dz-table { height: 60vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body, .titlebar, .panel, .card, .adv, .dock { transition: none; }
+    .danger-gate[open] { animation: none; }
 }
