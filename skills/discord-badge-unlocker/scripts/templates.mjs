@@ -1,7 +1,7 @@
 // Renders the three console scripts from the two engine templates in ./templates/.
 // Output is deterministic: the same table + options always give byte-identical text.
 
-import { ORIGINAL_REPO, formatHours, roundHours, sumHours, trackStartMs } from "./core.mjs";
+import { ORIGINAL_REPO, formatHours, roundHours, sumHours, toTenths, trackStartMs } from "./core.mjs";
 
 export const MACHINE_GUID = "b5a79402-959c-4861-a579-2821dfbb3c2b";
 export const CLAIMED_KEY = "__discordBadgeUnlocker_claimed_ids";
@@ -9,7 +9,8 @@ export const LEGACY_CLAIMED_KEYS = Object.freeze(["__badgePresenceFixed150_claim
 
 export const TEMPLATE_FILES = Object.freeze({
     telemetry: "templates/telemetry.js",
-    variety: "templates/variety.js"
+    variety: "templates/variety.js",
+    firstHeartbeat: "templates/first-heartbeat.js" // Danger Zone test script, rendered by renderFirstHeartbeat()
 });
 
 export const OUTPUTS = Object.freeze([
@@ -259,4 +260,117 @@ export function renderGamesMarkdown(table, { trackStart = null } = {}) {
         ...table.map((row, i) => `| ${i + 1} | ${mdCell(row.name)} | ${row.id} | \`${mdCell(row.exe)}\` | ${hoursLiteral(row.hours)} |`)
     ];
     return lines.join("\n") + "\n";
+}
+
+// ---------- Danger Zone test: one game's first heartbeat ----------
+
+export const FIRST_HEARTBEAT = Object.freeze({
+    file: "first-heartbeat.js", ns: "__firstHeartbeat", label: "[First Heartbeat]"
+});
+
+// Backdate is a switch; the clock is "off", "page" or "system" (system always shifts the page clock too).
+export const BACKDATE_BLURB = "Stamps the first heartbeat on the date and backtracks it by the hours, the way the main script's hours do.";
+export const CLOCKS = Object.freeze([
+    { key: "off", label: "Real clock", short: "Real", blurb: "The page clock isn't touched." },
+    { key: "page", label: "Shift page clock", short: "Page",
+        blurb: "Swaps Discord's in-page clock (Date, Intl.DateTimeFormat and every local-time method) to the date, and to a time zone if you set one, while the session is sent. Then it puts it back." },
+    { key: "system", label: "System + page clock", short: "System + page",
+        blurb: "You set your computer's date and time first; the script checks it's within 12h, then shifts the page clock onto the exact time as well." }
+]);
+const CLOCK_KEYS = CLOCKS.map(c => c.key);
+const CLOCK_TOLERANCE_MS = 12 * 3600 * 1000;
+
+export function isTimeZone(timeZone) {
+    try {
+        new Intl.DateTimeFormat("en-US", { timeZone });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+// "YYYY-MM-DDTHH:MM[:SS]" (a datetime-local value) as ms: in `timeZone`, or this machine's local time without one.
+export function zonedTimeToMs(local, timeZone = null) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(local ?? ""));
+    if (!m) return NaN;
+    const [y, mo, d, h, mi, s] = m.slice(1).map(v => Number(v ?? 0));
+    if (!timeZone) return new Date(y, mo - 1, d, h, mi, s).getTime();
+    const dtf = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
+    const offset = t => {
+        const o = Object.fromEntries(dtf.formatToParts(t).map(p => [p.type, p.value]));
+        return Date.UTC(+o.year, +o.month - 1, +o.day, +o.hour % 24, +o.minute, +o.second) - Math.floor(t / 1000) * 1000;
+    };
+    const guess = Date.UTC(y, mo - 1, d, h, mi, s);
+    return guess - offset(guess - offset(guess));
+}
+
+// { game: { id, name, exe }, firstMs, hours, untilNow, backdate, clock, timeZone, dryRun }. Throws on bad input.
+export function normalizeFirstHeartbeat(input = {}) {
+    const game = input.game ?? {};
+    if (!/^\d+$/.test(String(game.id ?? "")) || !game.name || !game.exe) throw new Error("Pick a game first.");
+    const firstMs = Math.round(Number(input.firstMs));
+    if (!Number.isFinite(firstMs) || firstMs <= 0) throw new Error("Set the first heartbeat's date and time.");
+    const backdate = input.backdate !== false;
+    const clock = CLOCK_KEYS.includes(input.clock) ? input.clock : "off";
+    if (!backdate && clock === "off") throw new Error("Turn on Backdate or pick a clock.");
+    const timeZone = clock !== "off" && input.timeZone ? String(input.timeZone).trim() : null;
+    if (timeZone && !isTimeZone(timeZone)) throw new Error(`"${timeZone}" isn't a time zone. Use an IANA name like America/New_York.`);
+    const untilNow = input.untilNow === true && backdate && clock !== "system";
+    const hours = toTenths(input.hours) / 10;
+    if (!untilNow && !(hours >= 0.1)) throw new Error("Hours must be at least 0.1.");
+    return {
+        game: { id: String(game.id), name: String(game.name), exe: String(game.exe) },
+        firstMs, hours: untilNow ? 0 : hours, untilNow, backdate, clock, timeZone, dryRun: input.dryRun === true
+    };
+}
+
+export function renderFirstHeartbeat(input, templates) {
+    const o = normalizeFirstHeartbeat(input);
+    const template = templates?.firstHeartbeat;
+    if (typeof template !== "string") throw new Error(`Template "firstHeartbeat" was not loaded.`);
+    const out = FIRST_HEARTBEAT;
+    const when = new Date(o.firstMs).toISOString().replace(".000Z", "Z");
+    const clock = CLOCKS.find(c => c.key === o.clock);
+    const length = o.untilNow ? "from then until the moment it runs" : `${formatHours(o.hours)}h long`;
+    const methods = [o.backdate && "Backdate", o.clock !== "off" && clock.label].filter(Boolean).join(" + ");
+    const lines = [
+        "Discord Badge Unlocker: first heartbeat for one game (Danger Zone test)",
+        `${o.game.name}: one session, first heartbeat at ${when}, ${length}.`,
+        `Method: ${methods}.`
+    ];
+    if (o.backdate) lines.push(BACKDATE_BLURB);
+    if (o.clock !== "off") lines.push(clock.blurb);
+    if (o.clock !== "off") {
+        lines.push(o.backdate ? "The page clock reads the session's end while it's sent." : "The page clock reads the first heartbeat while it's sent.");
+        if (o.timeZone) lines.push(`Page time zone: ${o.timeZone}.`);
+    }
+    if (o.clock === "system") lines.push("Set the system date first and restart Discord. Far-off dates can break HTTPS (certificates look expired).");
+    if (o.dryRun) lines.push("DRY RUN: builds every event but sends nothing.");
+    lines.push("", "Run: Discord desktop > Ctrl+Shift+I > Console > paste > Enter.", "If the console asks, type: allow pasting",
+        "Each run sends another session and adds its hours. It ignores the main scripts' sent history.",
+        "", "Commands:",
+        `  await window.${out.ns}.run()   send the session`,
+        ...(o.clock === "system" ? [`  await window.${out.ns}.run({ force: true })   send even if the system clock is off`] : []),
+        `  window.${out.ns}.stop()`,
+        "", "Based on everyoneexe/discord-game-badge-presence (GPL-3.0):", ORIGINAL_REPO);
+    const header = ["/*", ...lines.map(line => (line ? ` * ${line}` : " *")), " */"].join("\n");
+    const config = [
+        `const NS = ${q(out.ns)};`,
+        `    const LABEL = ${q(out.label)};`,
+        `    const GAME = Object.freeze({ id: ${q(o.game.id)}, name: ${q(o.game.name)}, exe: ${q(o.game.exe)} });`,
+        `    const FIRST_MS = ${o.firstMs}; // ${when}`,
+        `    const TIME_ZONE = ${o.timeZone ? q(o.timeZone) : "null"}; // page clock time zone; null keeps yours`,
+        `    const MACHINE_GUID = ${q(MACHINE_GUID)};`,
+        "    const CONFIG = Object.freeze({",
+        `        backdate: ${o.backdate},`,
+        `        clock: ${q(o.clock)},`,
+        `        hours: ${hoursLiteral(o.hours)},`,
+        `        untilNow: ${o.untilNow},`,
+        `        clockToleranceMs: ${CLOCK_TOLERANCE_MS},`,
+        `        dryRun: ${o.dryRun}`,
+        "    });"
+    ].join("\n");
+    const parts = template.split("// @@CONFIG@@");
+    if (parts.length !== 2 || !parts[0].includes("// @@HEADER@@")) throw new Error("Template markers missing.");
+    return { file: out.file, ns: out.ns, text: parts[0].replace("// @@HEADER@@", header) + config + parts[1] };
 }

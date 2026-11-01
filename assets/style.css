@@ -473,41 +473,42 @@ body[data-zone="danger"] .dock { margin: 0 -12px; padding: 8px 12px calc(8px + e
 body[data-zone="danger"] .notes { font-size: 13px; }
 .dz { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 8px; align-items: start; }
 .dz-side, .dz-main { display: grid; gap: 8px; min-width: 0; }
-.dz-box {
-    margin: 0; padding: 6px 10px 10px; min-width: 0; display: grid; gap: 8px; font-size: 13px;
-    background: var(--surface-high); border: 1px solid var(--border-subtle); border-radius: 4px;
+/* Sidebar cards: the same card, heading, field and button styles as the safe zone, just packed into a column. */
+.dz-box { margin: 0; padding: 16px; min-width: 0; display: grid; gap: 12px; background: var(--surface-high); border-radius: var(--r-lg); }
+.dz-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dz-fields > label:not(.opt), .dz-fields > .dz-wide:not(.opt) { display: grid; gap: 6px; min-width: 0; align-content: start; font-size: 14px; color: var(--text-2); }
+.dz-fields small { font-size: 12px; color: var(--muted); }
+.dz-fields input[type="number"], .dz-fields input[type="date"], .dz-fields input[type="datetime-local"], .dz-fields input[type="search"] {
+    width: 100%; height: 36px; font-size: 14px;
 }
-.dz-box legend { padding: 0 4px; margin-left: -4px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-.dz-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; }
-.dz-fields label { display: grid; gap: 2px; min-width: 0; font-size: 12px; color: var(--muted); }
-.dz-fields small { font-size: 11px; }
-.dz-fields input[type="number"], .dz-fields input[type="date"] { width: 100%; height: 28px; padding: 0 6px; border-radius: 4px; font: 13px/1 var(--mono); color: var(--text); }
-.dz-fields .dz-check { display: flex; align-items: center; gap: 6px; color: var(--text-2); cursor: pointer; }
-.dz-check input { margin: 0; accent-color: var(--blurple); }
-.dz-buttons, .dz-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.dz .btn { height: 26px; padding: 0 8px; border-radius: 4px; font-size: 12px; }
-.dz-label { margin-right: 2px; font-size: 12px; color: var(--muted); }
-.dz-stats { margin: 0; display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-size: 12px; }
+.dz-fields .search-icon + input { padding-left: 34px; }
+.dz-fields .search-icon { left: 12px; top: 10px; }
+.dz-wide { grid-column: 1 / -1; }
+.dz-opt { min-height: 36px; align-self: end; }
+.dz-opt.off { opacity: 0.5; }
+.dz-seg button { height: 28px; padding: 0 8px; font-size: 13px; }
+.dz-buttons, .dz-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dz-label { font-size: 14px; color: var(--text-2); }
+.dz-stats { margin: 0; display: grid; grid-template-columns: auto auto; gap: 4px 12px; font-size: 14px; }
 .dz-stats div { display: contents; }
-.dz-stats dt { color: var(--muted); }
-.dz-stats dd { margin: 0; text-align: right; font: 12px/1.5 var(--mono); color: var(--text-strong); }
-.dz-script { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.dz-script code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--text-2); }
-.dz-toolbar { font: 12px var(--mono); color: var(--muted); }
+.dz-stats dt { color: var(--text-2); }
+.dz-stats dd { margin: 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-strong); }
+.dz-script { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dz-script code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--muted); }
+.dz-toolbar { font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .dz-spacer { flex: 1; }
 .dz-table, .dz-code {
-    width: 100%; padding: 6px 8px; resize: vertical; white-space: pre; tab-size: 4;
-    background: var(--input); border: 1px solid var(--border-subtle); border-radius: 4px; color: var(--text);
+    width: 100%; padding: 12px; resize: vertical; white-space: pre; tab-size: 4;
+    background: var(--input); border: 1px solid var(--border-subtle); border-radius: var(--r); color: var(--text);
 }
-.dz-table { height: calc(100dvh - 230px); min-height: 320px; font: 12px/1.5 var(--mono); }
+.dz-table { height: calc(100dvh - 240px); min-height: 320px; font: 12px/1.5 var(--mono); }
 .dz-table:focus { outline: none; border-color: var(--blurple); }
-.dz-code { height: 320px; margin-top: 6px; font: 11px/1.5 var(--mono); color: var(--text-2); }
-.dz-help { margin: 0; font-size: 12px; color: var(--muted); }
+.dz-code { height: 320px; margin-top: 12px; font: 12px/1.5 var(--mono); color: var(--text-2); }
+.dz-help { margin: 0; font-size: 13px; color: var(--muted); }
 .dz-problems { margin: 0; padding: 0; list-style: none; max-height: 120px; overflow: auto; font: 12px/1.5 var(--mono); color: var(--error); }
 .dz-problems:empty { display: none; }
-.dz-preview { gap: 0; padding-top: 6px; }
-.dz-preview summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-.fact-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
+.dz-preview { padding: 12px 16px; }
+.fact-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--text-2); }
 .fact-list .source { list-style: none; margin-left: -18px; color: var(--muted); }
 .fact-list a { color: var(--link); }
 @media (max-width: 900px) {
@@ -519,3 +520,24 @@ body[data-zone="danger"] .notes { font-size: 13px; }
     body, .titlebar, .panel, .card, .adv, .dock { transition: none; }
     .danger-gate[open] { animation: none; }
 }
+
+/* Danger Zone test: first heartbeat */
+.dz-notes { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+.dz-notes:empty { display: none; }
+.dz-notes .error { color: var(--error); }
+.dz-notes .warn { color: var(--warning); }
+.dz-notes .info { color: var(--muted); }
+/* "Does the date matter?" next to First heartbeat: louder than the usual (i) */
+.dz-test .t-first-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.dz-test .t-info {
+    width: auto; height: 20px; margin: 0; padding: 0 8px 0 4px; gap: 4px; grid-auto-flow: column;
+    border-radius: 10px; opacity: 1; color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 45%, transparent); font-size: 11px; font-weight: 600;
+}
+.dz-test .t-info:hover, .dz-test .t-info:focus-visible { background: color-mix(in srgb, var(--warning) 24%, transparent); }
+.dz-test .t-info svg { width: 14px; height: 14px; }
+/* Generate's buttons: an even grid, not ragged wrapping */
+.dz-box > .dz-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.dz-box > .dz-buttons.dz-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dz-box > .dz-buttons .btn { min-width: 0; padding: 0 8px; }
+.dz-three .dz-label { grid-column: 1 / -1; }

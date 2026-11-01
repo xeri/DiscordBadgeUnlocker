@@ -7,7 +7,10 @@ import {
     resolveSelection, roundHours, scaleTo,
     searchCatalog, sendGames, sendHours, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable, vibeKey
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
-import { DEFAULT_OPTIONS, OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
+import {
+    BACKDATE_BLURB, CLOCKS, DEFAULT_OPTIONS, FIRST_HEARTBEAT, OUTPUTS, isTimeZone, loadTemplates, normalizeOptions, renderFirstHeartbeat,
+    renderScripts, zonedTimeToMs
+} from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 
 const DATA = new URL("../data/", import.meta.url);
 const STORE_KEY = "discordBadgeUnlocker:v2";
@@ -50,7 +53,10 @@ const TIP = {
         "Off: only games with a real Windows executable, like the original Variety script.",
     untested: "Discord's catalog lists no Windows executable for these games, so the scripts send a made-up “name.exe” with them. " +
         "The original Game Time script sent games like these; the original Variety script left them out. " +
-        "Nobody has confirmed whether Discord counts them. To be safe, swap them for other games or add a few spare."
+        "Nobody has confirmed whether Discord counts them. To be safe, swap them for other games or add a few spare.",
+    firstDate: "The date doesn't really matter for badges. A badge shows the date of the latest tier you got, so it moves " +
+        "forward on its own: if you later reach the top tier naturally, the date updates to that day. An old first heartbeat " +
+        "won't stay as your badge date. Game Time also only counts time played on or after 8 December 2025."
 };
 const HELP_URL = "https://support.discord.com/hc/en-us/articles/44369363856663";
 const MAX_HOURS_EACH = 1e6; // the most per game the scripts sum exactly across the whole catalog
@@ -60,7 +66,7 @@ const TABLE_HEAD = "# id\tname\texe\thours  (one game per line, tab-separated; l
 const DANGER_OPTIONS = [
     ["batchSize", "Batch size", 100000], ["delayMs", "Delay ms", 86400000],
     ["variety.batchSize", "Variety batch size", 100000], ["variety.delayMs", "Variety delay ms", 86400000],
-    ["variety.rotateMinutes", "Variety minutes per game", 525600], ["dryRun", "Dry run"], ["variety.keepRotating", "Keep rotating (Variety)"]
+    ["variety.rotateMinutes", "Minutes per game", 525600], ["dryRun", "Dry run"], ["variety.keepRotating", "Keep rotating (Variety)"]
 ];
 const cleanCell = value => String(value ?? "").replace(/[\t\r\n]+/g, " ").trim();
 
@@ -139,6 +145,9 @@ const DEFAULT_STATE = () => ({
     custom: { name: null, vibe: "popular", top: 100, total: tierAim("time", topTier("time")), spread: "weighted", games: [], manual: null },
     // count null: every game in the pool. The table itself lives under TABLE_KEY.
     danger: { count: null, hours: 24, untested: true, seed: newSeed(), options: normalizeOptions({}, { uncapped: true }) },
+    // Danger Zone test: one game, one session, first heartbeat at `first` (datetime-local, read in timeZone or this computer's).
+    // Backdate is a switch; clock is "off", "page" or "system" (system shifts the page clock too).
+    dzTest: { game: null, first: "", hours: 1, untilNow: false, backdate: true, clock: "off", timeZone: "" },
     trackStart: null,
     options: normalizeOptions()
 });
@@ -154,6 +163,7 @@ function loadState() {
             state.custom.vibe = vibeKey(state.custom.vibe);
             state.danger = { ...state.danger, ...(saved.danger ?? {}) };
             state.danger.options = normalizeOptions(state.danger.options, { uncapped: true });
+            state.dzTest = { ...state.dzTest, ...(saved.dzTest ?? {}) };
             state.have = normalizeHave(saved.have);
             state.custom.games = normalizeSelection({ games: state.custom.games ?? [] }).games;
             if (!state.custom.manual || typeof state.custom.manual !== "object") state.custom.manual = null;
@@ -247,51 +257,72 @@ const markup = catalogSize => `
 
 <section class="dz" data-pane="danger" hidden>
   <div class="dz-side">
-    <fieldset class="dz-box">
-      <legend>Generate</legend>
+    <section class="dz-box">
+      <h3 class="cat">Generate</h3>
       <div class="dz-fields">
-        <label>Games <small data-ref="dOf"></small><input type="number" min="1" step="1" inputmode="numeric" data-ref="dCount" data-gen></label>
+        <label><span>Games <small data-ref="dOf"></small></span><input type="number" min="1" step="1" inputmode="numeric" data-ref="dCount" data-gen></label>
         <label>Hours each<input type="number" min="0.1" max="${MAX_HOURS_EACH}" step="0.1" inputmode="decimal" data-ref="dHours" data-gen></label>
         <label>Seed<input type="number" min="0" max="4294967295" step="1" inputmode="numeric" data-ref="dSeed" data-gen></label>
-        <label class="dz-check" data-tip="${TIP.dUntested}"><input type="checkbox" data-ref="dUntested">Include untested</label>
+        <label class="opt dz-opt" data-tip="${TIP.dUntested}">Include untested<span class="switch"><input type="checkbox" data-ref="dUntested"><span></span></span></label>
       </div>
       <div class="dz-buttons">
-        <button class="btn primary" type="button" data-action="d-generate" data-tip="Replace the table using these fields. Enter in a field does the same.">Generate</button>
-        <button class="btn" type="button" data-action="d-all" data-ref="dAll">All games</button>
-        <button class="btn" type="button" data-action="shuffle" data-tip="A new seed, then Generate">Shuffle</button>
-        <button class="btn" type="button" data-action="d-max" data-tip="Every game Discord lists, each with the most hours Game Time can count">Max everything</button>
+        <button class="btn primary sm" type="button" data-action="d-generate" data-tip="Replace the table using these fields. Enter in a field does the same.">Generate</button>
+        <button class="btn sm" type="button" data-action="d-all" data-ref="dAll">All games</button>
+        <button class="btn sm" type="button" data-action="shuffle" data-tip="A new seed, then Generate">Shuffle</button>
+        <button class="btn sm" type="button" data-action="d-max" data-tip="Every game Discord lists, each with the most hours Game Time can count">Max everything</button>
       </div>
-      <div class="dz-buttons"><span class="dz-label">Every row:</span>
-        <button class="btn" type="button" data-action="d-apply" data-tip="Set every row's hours to Hours each">Hours each</button>
-        <button class="btn" type="button" data-action="d-24" data-tip="The original Game Time script's final choice: 250 games × 24h">24h</button>
-        <button class="btn" type="button" data-action="d-since" data-ref="dSince">Max that counts</button>
+      <div class="dz-buttons dz-three"><span class="dz-label">Every row</span>
+        <button class="btn sm" type="button" data-action="d-apply" data-tip="Set every row's hours to Hours each">Hours each</button>
+        <button class="btn sm" type="button" data-action="d-24" data-tip="The original Game Time script's final choice: 250 games × 24h">24h</button>
+        <button class="btn sm" type="button" data-action="d-since" data-ref="dSince">Max that counts</button>
       </div>
-    </fieldset>
-    <fieldset class="dz-box">
-      <legend>Script options</legend>
+    </section>
+    <section class="dz-box">
+      <h3 class="cat">Script options</h3>
       <div class="dz-fields">
-        ${DANGER_OPTIONS.map(([path, label, max]) => max == null
-            ? `<label class="dz-check"><input type="checkbox" data-dopt="${path}">${label}</label>`
-            : `<label>${label}<input type="number" min="${path.endsWith("delayMs") ? 0 : 1}" max="${max}" step="1" inputmode="numeric" data-dopt="${path}"></label>`).join("\n        ")}
+        ${DANGER_OPTIONS.filter(([, , max]) => max != null).map(([path, label, max]) =>
+            `<label>${label}<input type="number" min="${path.endsWith("delayMs") ? 0 : 1}" max="${max}" step="1" inputmode="numeric" data-dopt="${path}"></label>`).join("\n        ")}
         <label data-tip="${TIP.since}">Played since<input type="date" data-ref="dTrack"></label>
+        ${DANGER_OPTIONS.filter(([, , max]) => max == null).map(([path, label]) =>
+            `<label class="opt dz-opt dz-wide">${label}<span class="switch"><input type="checkbox" data-dopt="${path}"><span></span></span></label>`).join("\n        ")}
       </div>
-    </fieldset>
-    <fieldset class="dz-box"><legend>Run (main script)</legend><dl class="dz-stats" data-ref="blast"></dl></fieldset>
-    <fieldset class="dz-box">
-      <legend>Scripts</legend>
-      ${OUTPUTS.map(o => `<div class="dz-script"><code>${o.file}</code><button class="btn" type="button" data-copy="${o.key}">Copy</button><button class="btn" type="button" data-download="${o.key}">Download</button></div>`).join("\n      ")}
-    </fieldset>
-    <fieldset class="dz-box"><legend>What Discord says</legend><ul class="fact-list" data-ref="facts"></ul></fieldset>
+    </section>
+    <section class="dz-box"><h3 class="cat">Run (main script)</h3><dl class="dz-stats" data-ref="blast"></dl></section>
+    <section class="dz-box">
+      <h3 class="cat">Scripts</h3>
+      ${OUTPUTS.map(o => `<div class="dz-script"><code>${o.file}</code><button class="btn sm" type="button" data-copy="${o.key}">Copy</button><button class="btn sm" type="button" data-download="${o.key}">Download</button></div>`).join("\n      ")}
+    </section>
+    <section class="dz-box dz-test">
+      <h3 class="cat">Test: first heartbeat</h3>
+      <p class="dz-help">One game, one session, with its first heartbeat on the date you set. Every run sends another session and adds its hours.</p>
+      <div class="dz-fields">
+        <div class="dz-wide"><span>Game</span><div class="search"><svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.6-4.6"/></svg><input type="search" placeholder="Search games" autocomplete="off" data-ref="tSearch" aria-label="Test game"><ul class="menu" data-ref="tResults" hidden></ul></div></div>
+        <div class="dz-wide"><span class="t-first-head"><span data-tip="Read in the time zone below, or this computer's when that's empty">First heartbeat</span>
+          <button type="button" class="info-btn t-info" data-tip="${esc(TIP.firstDate)}" data-tip-click aria-label="Does the date matter?">${INFO_ICON}<span>Does the date matter?</span></button></span>
+          <input type="datetime-local" step="60" data-ref="tFirst" aria-label="First heartbeat"></div>
+        <label>Hours<input type="number" min="0.1" step="0.1" inputmode="decimal" data-ref="tHours"></label>
+        <label class="opt dz-opt" data-ref="tUntilField" data-tip="Run the session from the first heartbeat right up to the moment the script runs. That can be thousands of hours.">Until now<span class="switch"><input type="checkbox" data-ref="tUntilNow"><span></span></span></label>
+        <label class="opt dz-opt dz-wide" data-tip="${esc(BACKDATE_BLURB)}">Backdate<span class="switch"><input type="checkbox" data-ref="tBackdate"><span></span></span></label>
+        <div class="dz-wide"><span>Clock</span><div class="seg dz-seg" role="group" aria-label="Clock">
+          ${CLOCKS.map(c => `<button type="button" data-t-clock="${c.key}" data-tip="${esc(c.blurb)}">${c.short}</button>`).join("")}</div></div>
+        <div class="dz-wide" data-ref="tZoneField"><span data-tip="What the shifted page clock reports as its time zone, and the zone the first heartbeat is read in. Empty keeps yours.">Time zone</span>
+          <div class="search"><input type="search" placeholder="${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}" autocomplete="off" spellcheck="false" data-ref="tZone" aria-label="Page clock time zone"><ul class="menu" data-ref="tZones" hidden></ul></div></div>
+      </div>
+      <p class="dz-help" data-ref="tMethod"></p>
+      <ul class="dz-notes" data-ref="tNotes"></ul>
+      <div class="dz-script"><code>${FIRST_HEARTBEAT.file}</code><button class="btn sm" type="button" data-t="copy">Copy</button><button class="btn sm" type="button" data-t="download">Download</button></div>
+    </section>
+    <section class="dz-box"><h3 class="cat">What Discord says</h3><ul class="fact-list" data-ref="facts"></ul></section>
   </div>
   <div class="dz-main">
     <div class="dz-toolbar"><span data-ref="dRows"></span><span class="dz-spacer"></span>
-      <button class="btn" type="button" data-action="d-copy-table">Copy table</button>
-      <button class="btn" type="button" data-action="d-clear" data-ref="dClear" data-tip="Empty the table">Clear</button>
+      <button class="btn sm" type="button" data-action="d-copy-table">Copy table</button>
+      <button class="btn sm" type="button" data-action="d-clear" data-ref="dClear" data-tip="Empty the table">Clear</button>
     </div>
     <textarea class="dz-table" data-ref="dTable" spellcheck="false" autocomplete="off" wrap="off" aria-label="Game table: id, name, exe and hours, tab-separated" aria-describedby="dz-table-help"></textarea>
     <p class="dz-help" id="dz-table-help">Edit anything: this is exactly what the scripts send, in this order. Tab inserts a tab; press Esc, then Tab, to move on.</p>
     <ul class="dz-problems" data-ref="dProblems"></ul>
-    <details class="dz-box dz-preview" data-ref="dPreviewBox"><summary>Main script preview</summary><textarea class="dz-code" readonly spellcheck="false" wrap="off" data-ref="dPreview" aria-label="Main script"></textarea></details>
+    <details class="dz-box dz-preview peek" data-ref="dPreviewBox"><summary>Main script preview</summary><textarea class="dz-code" readonly spellcheck="false" wrap="off" data-ref="dPreview" aria-label="Main script"></textarea></details>
   </div>
 </section>
 
@@ -973,7 +1004,11 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
 
     const placePresets = () => place(ref.presetsMenu, ref.presetsBtn);
     const placeResults = () => place(ref.results, ref.search, { stretch: true, maxHeight: 320 });
-    const placeMenus = () => { placePresets(); placeResults(); };
+    const placeTestResults = () => place(ref.tResults, ref.tSearch, { stretch: true, maxHeight: 280 });
+    const placeMenus = () => {
+        placePresets(); placeResults(); placeTestResults();
+        place(ref.tZones, ref.tZone, { stretch: true, maxHeight: 280 });
+    };
     window.addEventListener("scroll", event => {
         if (!(event.target instanceof Element && event.target.closest(".presets-menu, .menu"))) placeMenus();
     }, { capture: true, passive: true });
@@ -1056,12 +1091,108 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         placeResults();
     }
 
+    // ---------- Danger Zone test: first heartbeat ----------
+
+    let testScript = null;
+
+    function renderTestResults() {
+        const q = ref.tSearch.value;
+        if (!q.trim()) { ref.tResults.hidden = true; return; }
+        const results = searchCatalog(index, q, { limit: 8, boostIds: scoreById.size ? scoreById : null });
+        ref.tResults.innerHTML = results.length
+            ? results.map((g, i) => `<li data-t-pick="${esc(g.id)}" class="${i === 0 ? "active" : ""}"><span>${esc(g.name)}</span>${untested(g.id) ? `<span class="muted">untested</span>` : ""}</li>`).join("")
+            : `<li class="none">No games found</li>`;
+        ref.tResults.hidden = false;
+        ref.tResults.scrollTop = 0;
+        placeTestResults();
+    }
+
+    const ZONES = Intl.supportedValuesOf?.("timeZone") ?? [];
+    function renderZoneResults() {
+        const q = ref.tZone.value.trim().toLowerCase().replace(/[\s_]+/g, " ");
+        if (!q) { ref.tZones.hidden = true; return; }
+        const hits = ZONES.filter(z => z.toLowerCase().replace(/_/g, " ").includes(q))
+            .sort((a, b) => a.toLowerCase().replace(/_/g, " ").indexOf(q) - b.toLowerCase().replace(/_/g, " ").indexOf(q)).slice(0, 30);
+        ref.tZones.innerHTML = hits.length
+            ? hits.map((z, i) => `<li data-t-zone="${esc(z)}" class="${i === 0 ? "active" : ""}"><span>${esc(z.replace(/_/g, " "))}</span></li>`).join("")
+            : `<li class="none">No time zones found</li>`;
+        ref.tZones.hidden = false;
+        ref.tZones.scrollTop = 0;
+        place(ref.tZones, ref.tZone, { stretch: true, maxHeight: 280 });
+    }
+
+    function renderTest() {
+        const t = state.dzTest;
+        const clock = CLOCKS.find(c => c.key === t.clock) ?? CLOCKS[0];
+        const shifted = clock.key !== "off";
+        const system = clock.key === "system";
+        const backdate = t.backdate !== false;
+        ref.tBackdate.checked = backdate;
+        for (const b of root.querySelectorAll("[data-t-clock]")) b.setAttribute("aria-pressed", String(b.dataset.tClock === clock.key));
+        ref.tSearch.placeholder = t.game ? t.game.name : "Search games";
+        setValue(ref.tFirst, t.first || "");
+        setValue(ref.tHours, t.hours || "");
+        setValue(ref.tZone, t.timeZone || "");
+        ref.tZoneField.hidden = !shifted;
+        const untilOk = backdate && !system;
+        const untilNow = t.untilNow && untilOk;
+        ref.tUntilNow.checked = untilNow;
+        ref.tUntilNow.disabled = !untilOk;
+        ref.tUntilField.classList.toggle("off", !untilOk);
+        ref.tHours.disabled = untilNow;
+        ref.tMethod.textContent = [backdate && BACKDATE_BLURB, shifted && clock.blurb,
+            shifted && (backdate ? "With Backdate on, the page clock reads the session's end while it's sent." : "The page clock reads the first heartbeat while it's sent.")]
+            .filter(Boolean).join(" ");
+
+        const notes = [];
+        const now = Date.now();
+        const zone = shifted && t.timeZone ? t.timeZone : null;
+        testScript = null;
+        try {
+            if (zone && !isTimeZone(zone)) {
+                // Still typing: a hint, not an error, until the field is left.
+                if (document.activeElement === ref.tZone) throw Object.assign(new Error("Pick a time zone from the list."), { level: "info" });
+                throw new Error(`"${zone}" isn't a time zone. Pick one from the list, like America/New_York.`);
+            }
+            const firstMs = t.first ? zonedTimeToMs(t.first, zone) : NaN;
+            if (Number.isFinite(firstMs) && !system) {
+                if (firstMs >= now) throw new Error("The first heartbeat is in the future. Only the system clock can send a session that hasn't happened yet.");
+                if (!untilNow && firstMs + toTenths(t.hours) * 360000 > now) throw new Error("The date plus the hours ends in the future. Pick fewer hours or an earlier date.");
+            }
+            testScript = renderFirstHeartbeat({
+                game: t.game, firstMs, hours: t.hours, untilNow, backdate, clock: clock.key, timeZone: zone, dryRun: state.danger.options.dryRun
+            }, templates);
+            if (zone) notes.push({ level: "info", text: `First heartbeat: ${new Date(firstMs).toISOString().slice(0, 16).replace("T", " ")} UTC (${t.first.replace("T", " ")} in ${zone}).` });
+            if (untested(t.game.id)) notes.push({ level: "warn", text: `${t.game.name} is untested: Discord lists no executables for it.` });
+            if (firstMs < Date.UTC(2015, 4, 13)) notes.push({ level: "warn", text: "That's before Discord launched (May 2015)." });
+            if (firstMs < Date.parse(`${GAME_TIME_SINCE}T00:00:00Z`)) {
+                notes.push({ level: "warn", text: `Game Time only counts time played on or after ${GAME_TIME_SINCE}, so this session's hours likely won't count toward that badge.` });
+            }
+            const hours = untilNow ? (now - firstMs) / 3600000 : t.hours;
+            if (hours > 5000) notes.push({ level: "warn", text: `One ${hrs(Math.floor(hours * 10) / 10)}h session is an obvious outlier.` });
+            notes.push({ level: "info", text: "Every method sends the same timestamps. The clocks only change what your Discord client reads while it sends; the server still sees when the request really arrived." });
+            if (system) {
+                const at = backdate ? firstMs + toTenths(t.hours) * 360000 : firstMs;
+                notes.push({ level: "info", text: `Set your computer's clock to about ${new Date(at).toLocaleString()} (within 12h), restart Discord, then paste. Far-off dates can break HTTPS.` });
+            }
+            if (state.danger.options.dryRun) notes.push({ level: "info", text: "Dry run is on (Script options): it builds the session but sends nothing." });
+        } catch (error) {
+            notes.unshift({ level: error.level ?? "error", text: error.message });
+        }
+        ref.tNotes.innerHTML = notes.map(n => `<li class="${n.level}">${esc(n.text)}</li>`).join("");
+        for (const b of root.querySelectorAll("[data-t]")) {
+            b.disabled = !testScript;
+            b.dataset.tip = testScript ? (b.dataset.t === "copy" ? `Copy ${FIRST_HEARTBEAT.file}` : `Save ${FIRST_HEARTBEAT.file}`) : "Fix the notes above first";
+        }
+    }
+
     // ---------- events ----------
 
     root.addEventListener("click", async event => {
         if (event.target.closest(".info-btn")) return; // only shows its hint (tips.js); keeps an armed button armed
-        const target = event.target.closest("button, [data-add]");
+        const target = event.target.closest("button, [data-add], [data-t-pick], [data-t-zone]");
         if (armed && target !== armed.el) disarm();
+        if (!event.target.closest(".dz-test .search")) { ref.tResults.hidden = true; ref.tZones.hidden = true; }
         if (!target || !root.contains(target)) {
             if (!event.target.closest(".search")) ref.results.hidden = true;
             return;
@@ -1085,6 +1216,31 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             if (game) addGames([game]);
             ref.search.value = "";
             ref.results.hidden = true;
+        } else if (d.tPick) {
+            const game = byId.get(d.tPick);
+            if (game) state.dzTest.game = { id: game.id, name: game.name, exe: game.exe };
+            ref.tSearch.value = "";
+            ref.tResults.hidden = true;
+            save();
+            renderTest();
+        } else if (d.tClock) {
+            state.dzTest.clock = d.tClock;
+            save();
+            renderTest();
+        } else if (d.tZone != null) {
+            state.dzTest.timeZone = d.tZone;
+            ref.tZone.value = d.tZone;
+            ref.tZones.hidden = true;
+            save();
+            renderTest();
+        } else if (d.t) {
+            if (!testScript) return;
+            if (d.t === "copy") {
+                if (await copyText(testScript.text)) toast(`Copied. Paste it ${TIP.run}`, 9000);
+            } else {
+                download(testScript.file, testScript.text);
+                toast(`Saved ${testScript.file}. Paste its contents ${TIP.run}`, 9000);
+            }
         } else if (d.remove != null) {
             state.custom.games.splice(Number(d.remove), 1);
             changed({ custom: true });
@@ -1190,6 +1346,20 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
 
     root.addEventListener("input", event => {
         const t = event.target;
+        if (t === ref.tSearch) {
+            renderTestResults();
+            return;
+        }
+        if (t === ref.tZone) renderZoneResults();
+        if ([ref.tFirst, ref.tHours, ref.tUntilNow, ref.tBackdate, ref.tZone].includes(t)) {
+            Object.assign(state.dzTest, {
+                first: ref.tFirst.value, hours: Number(ref.tHours.value), untilNow: ref.tUntilNow.checked,
+                backdate: ref.tBackdate.checked, timeZone: ref.tZone.value.trim()
+            });
+            save();
+            renderTest();
+            return;
+        }
         if (t === ref.rCount || t === ref.rHours) {
             state.random.count = Math.floor(pos(ref.rCount.value, state.random.count));
             state.random.hours = pos(ref.rHours.value, state.random.hours);
@@ -1266,8 +1436,11 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             state.trackStart = t.value || null;
             renderAdvanced();
             changed({ now: true });
+        } else if (t === ref.tZone) {
+            renderTest(); // left the field: a half-typed zone is an error now
         } else if (t.dataset.gen != null || t.dataset.dopt) {
             renderDanger();
+            renderTest(); // Dry run applies to the test script too
         } else if (t === ref["have-variety"] || t === ref["have-time"]) {
             renderHave();
         } else if (t.dataset.opt) {
@@ -1291,6 +1464,27 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         ref.dTable.dispatchEvent(new Event("input", { bubbles: true }));
     });
     ref.dTable.addEventListener("blur", () => { tabEscaped = false; });
+
+    // ↑ ↓ to move, Enter to pick, Esc to close: the same keys as the Custom search.
+    function menuKeys(input, menu, selector) {
+        input.addEventListener("keydown", event => {
+            const items = menu.hidden ? [] : [...menu.querySelectorAll(selector)];
+            const at = Math.max(0, items.findIndex(li => li.classList.contains("active")));
+            if (event.key === "Escape") {
+                menu.hidden = true;
+            } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && items.length) {
+                event.preventDefault();
+                const next = (at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+                items.forEach((li, i) => li.classList.toggle("active", i === next));
+                items[next].scrollIntoView({ block: "nearest" });
+            } else if (event.key === "Enter" && items[at]) {
+                event.preventDefault();
+                items[at].click();
+            }
+        });
+    }
+    menuKeys(ref.tSearch, ref.tResults, "[data-t-pick]");
+    menuKeys(ref.tZone, ref.tZones, "[data-t-zone]");
 
     ref.search.addEventListener("keydown", event => {
         const items = [...ref.results.querySelectorAll("[data-add]")];
@@ -1330,6 +1524,7 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     renderCustom();
     renderAdvanced();
     renderDanger();
+    renderTest();
     if (zone === "danger" && dangerText == null) generateTable();
     renderOutput();
 
@@ -1338,6 +1533,8 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         disarm();
         setPresets(false);
         ref.results.hidden = true;
+        ref.tResults.hidden = true;
+        ref.tZones.hidden = true;
         renderMode();
         if (zone === "danger" && dangerText == null) generateTable();
         else if (zone === "danger") renderDanger();

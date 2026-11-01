@@ -9,7 +9,10 @@ import {
     normalizeSelection, parseCatalog, pickFromRanking, pickRandom, randomPool, resolveSelection, scaleTo, searchCatalog,
     sendGames, sendHours, serializeCatalog, splitEvenly, sumHours, summarize, tierAim, tierFor, validateTable, vibesFor
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
-import { OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
+import {
+    OUTPUTS, loadTemplates, normalizeFirstHeartbeat, normalizeOptions, renderFirstHeartbeat, renderScripts, zonedTimeToMs
+} from "../skills/discord-badge-unlocker/scripts/templates.mjs";
+import vm from "node:vm";
 
 const win = name => [{ os: "win32", name: `win64/${name}` }]; // a real exe: not the "<name>.exe" slug
 const CATALOG = normalizeCatalog([
@@ -285,4 +288,133 @@ test("uncapped options keep the scripts' wider limits", () => {
     assert.equal(normalizeOptions({ batchSize: 500 }).batchSize, 100);
     assert.equal(normalizeOptions({ batchSize: 500 }, { uncapped: true }).batchSize, 500);
     assert.equal(normalizeOptions({ variety: { rotateMinutes: 1e9 } }, { uncapped: true }).variety.rotateMinutes, 525600);
+});
+
+// ---------- Danger Zone test: first heartbeat ----------
+
+const FH_GAME = { id: "100001", name: "Valheim", exe: "valheim.exe" };
+const FH_FIRST = Date.UTC(2019, 2, 5, 19, 30); // 14:30 in New York
+
+test("zonedTimeToMs reads a datetime-local value in a time zone, DST included", () => {
+    assert.equal(zonedTimeToMs("2019-03-05T14:30", "America/New_York"), FH_FIRST);
+    assert.equal(zonedTimeToMs("2024-03-10T03:30", "America/New_York"), Date.UTC(2024, 2, 10, 7, 30));
+    assert.equal(zonedTimeToMs("2019-07-01T09:00", "Asia/Kolkata"), Date.UTC(2019, 6, 1, 3, 30));
+    assert.ok(Number.isNaN(zonedTimeToMs("2019-03-05", "UTC")));
+});
+
+test("normalizeFirstHeartbeat needs a game, a date and a method", () => {
+    assert.throws(() => normalizeFirstHeartbeat({ firstMs: FH_FIRST, hours: 1 }), /Pick a game/);
+    assert.throws(() => normalizeFirstHeartbeat({ game: FH_GAME, hours: 1 }), /date and time/);
+    assert.throws(() => normalizeFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 1, backdate: false, clock: "off" }), /Backdate or pick a clock/);
+    assert.throws(() => normalizeFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 1, clock: "page", timeZone: "Mars/Base" }), /isn't a time zone/);
+    // Until now needs Backdate and a clock the page knows (not the system's).
+    assert.equal(normalizeFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 1, untilNow: true, clock: "system" }).untilNow, false);
+    // The time zone only applies with a shifted clock.
+    assert.equal(normalizeFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 1, timeZone: "UTC" }).timeZone, null);
+});
+
+// Runs a rendered first-heartbeat script against a mocked Discord client; `osOffset` moves the "system" clock.
+async function runFirstHeartbeat(text, { osOffset = 0 } = {}) {
+    const posts = [];
+    const logs = [];
+    const ctx = { console: { log: m => logs.push(m), warn: m => logs.push(m), error: m => logs.push(m) },
+        crypto: globalThis.crypto, TextEncoder, btoa, setTimeout: fn => setImmediate(fn), addEventListener() {} };
+    ctx.window = ctx;
+    vm.createContext(ctx);
+    if (osOffset) vm.runInContext(`(() => { const now = Date.now; Date.now = () => now.call(Date) + ${osOffset}; })()`, ctx);
+    const client = {
+        get: async () => ({ body: { id: "111111111111111111", username: "tester", analytics_token: "tok" } }),
+        post: async req => { posts.push({ events: req.body.events, page: vm.runInContext("[Date.now(), new Date().getTimezoneOffset()]", ctx) }); return { ok: true, status: 204 }; },
+        del: async () => ({})
+    };
+    const requireFn = () => ({ default: client });
+    requireFn.m = { 1: () => "HTTPUtils" };
+    requireFn.c = {};
+    ctx.webpackChunkdiscord_app = { push: ([, , fn]) => fn(requireFn), pop() {} };
+    const RealDate = vm.runInContext("Date", ctx);
+    vm.runInContext(text, ctx);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return { posts, logs, ctx, restored: vm.runInContext("Date", ctx) === RealDate };
+}
+
+test("every first-heartbeat method sends the same session; clocks are put back", async () => {
+    const templates = await loadTemplates();
+    const end = FH_FIRST + 2 * 3600000;
+    const cases = [
+        [{ backdate: true, clock: "off" }, null],
+        [{ backdate: false, clock: "page", timeZone: "America/New_York" }, FH_FIRST],
+        [{ backdate: true, clock: "page", timeZone: "America/New_York" }, end],
+        [{ backdate: false, clock: "system" }, FH_FIRST, FH_FIRST + 60000],
+        [{ backdate: true, clock: "system" }, end, end - 300000]
+    ];
+    for (const [opts, pageAt, osAt] of cases) {
+        const { text } = renderFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 2, ...opts }, templates);
+        new vm.Script(text);
+        assert.ok(!text.includes("Math.random"));
+        const run = await runFirstHeartbeat(text, { osOffset: osAt ? osAt - Date.now() : 0 });
+        const name = JSON.stringify(opts);
+        assert.equal(run.posts.length, 1, name);
+        const [first, launch, last] = run.posts[0].events;
+        assert.deepEqual([first.type, launch.type, last.type], ["running_game_heartbeat", "launch_game", "running_game_heartbeat"], name);
+        // The system clock sends at whatever the computer reads, so allow its drift; the page clock lands exactly.
+        const slack = 5000;
+        assert.ok(Math.abs(first.properties.client_track_timestamp - FH_FIRST) < slack, name);
+        assert.equal(first.properties.initial_heartbeat, true);
+        assert.equal(last.properties.duration_tracked_ms, 7200000);
+        assert.equal(last.properties.client_track_timestamp - first.properties.client_track_timestamp, 7200000, name);
+        const [pageNow, tzo] = run.posts[0].page;
+        if (pageAt === null) assert.ok(Math.abs(pageNow - Date.now()) < slack, name);
+        else assert.ok(Math.abs(pageNow - pageAt) < slack, name);
+        if (opts.timeZone) assert.equal(tzo, 300, name); // New York in March, inside the send
+        assert.ok(run.restored, name);
+    }
+});
+
+test("the system clock refuses a clock that's off unless forced", async () => {
+    const templates = await loadTemplates();
+    const { text } = renderFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 2, backdate: false, clock: "system" }, templates);
+    const run = await runFirstHeartbeat(text);
+    assert.equal(run.posts.length, 0);
+    assert.ok(run.logs.some(line => /System clock reads/.test(line)));
+    await run.ctx.window.__firstHeartbeat.run({ force: true });
+    assert.equal(run.posts.length, 1);
+});
+
+test("the page clock shift fakes local time in a time zone, then restores it", async () => {
+    const templates = await loadTemplates();
+    const { text } = renderFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 2, backdate: false, clock: "page", timeZone: "America/New_York" }, templates);
+    const { ctx } = await runFirstHeartbeat(text);
+    const before = vm.runInContext("[Date, Intl.DateTimeFormat, Date.prototype.getHours, Date.prototype.toString]", ctx);
+    const r = vm.runInContext(`(() => {
+        const restore = window.__firstHeartbeat.shiftClock(${FH_FIRST}, "America/New_York");
+        try {
+            const d = new Date();
+            const s = new Date(${FH_FIRST});
+            s.setHours(23, 15);
+            return {
+                string: d.toString().replace(/:\\d\\d GMT/, ":SS GMT"),
+                call: Date().slice(0, 21),
+                fields: [d.getFullYear(), d.getMonth(), d.getDate(), d.getDay(), d.getHours(), d.getMinutes()].join(","),
+                tzo: [d.getTimezoneOffset(), new Date(Date.UTC(2019, 6, 1)).getTimezoneOffset()].join(","),
+                parse: [Date.parse("2019-03-05T10:00"), Date.parse("2019-03-05"), Date.parse("2019-03-05T10:00Z"), new Date(2019, 2, 5, 10).getTime()].join(","),
+                setHours: s.toISOString(),
+                locale: new Date(${FH_FIRST}).toLocaleTimeString("en-US").replace(/\\u202f/g, " "),
+                zone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+                format: new Intl.DateTimeFormat("en-US").format(),
+                same: (d instanceof Date) && d.constructor === Date
+            };
+        } finally { restore(); }
+    })()`, ctx);
+    assert.equal(r.string, "Tue Mar 05 2019 14:30:SS GMT-0500 (Eastern Standard Time)");
+    assert.equal(r.call, "Tue Mar 05 2019 14:30");
+    assert.equal(r.fields, "2019,2,5,2,14,30");
+    assert.equal(r.tzo, "300,240");
+    assert.equal(r.parse, [Date.UTC(2019, 2, 5, 15), Date.UTC(2019, 2, 5), Date.UTC(2019, 2, 5, 10), Date.UTC(2019, 2, 5, 15)].join(","));
+    assert.equal(r.setHours, "2019-03-06T04:15:00.000Z");
+    assert.equal(r.locale, "2:30:00 PM");
+    assert.equal(r.zone, "America/New_York");
+    assert.equal(r.format, "3/5/2019");
+    assert.ok(r.same);
+    const after = vm.runInContext("[Date, Intl.DateTimeFormat, Date.prototype.getHours, Date.prototype.toString]", ctx);
+    assert.ok(before.every((v, i) => v === after[i]));
 });
