@@ -4,7 +4,7 @@
 import {
     BADGE_TIERS, ORIGINAL_MAX, VIBES, assignHours, catalogIndex, countByVibe, fitTier, formatCount, formatHours, hoursSince,
     minHours, normalizeSelection, parseRanking, pickFromRanking, pickRandom, resolveSelection, roundHours, scaleTo,
-    searchCatalog, sendGames, sendHours, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable
+    searchCatalog, sendGames, sendHours, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable, vibeKey
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import { DEFAULT_OPTIONS, OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 
@@ -103,6 +103,7 @@ function loadState() {
             state.mode = saved.mode === "custom" ? "custom" : "random";
             state.random = { ...state.random, ...(saved.random ?? {}) };
             state.custom = { ...state.custom, ...(saved.custom ?? {}) };
+            state.custom.vibe = vibeKey(state.custom.vibe);
             state.have = normalizeHave(saved.have);
             state.custom.games = normalizeSelection({ games: state.custom.games ?? [] }).games;
             if (!state.custom.manual || typeof state.custom.manual !== "object") state.custom.manual = null;
@@ -856,7 +857,9 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
                 setPresets(ref.presetsMenu.hidden);
             } else if (action === "add-vibe") {
                 if (!ranking) return;
-                const skipIds = new Set(c.games.map(g => g.id));
+                // Skip games already listed, and untested ones (the ranking leaves those out; this covers a newer live catalog).
+                const listed = new Set(c.games.map(g => g.id));
+                const skipIds = { has: id => listed.has(id) || untested(id) };
                 const added = addGames(pickFromRanking(ranking, { vibe: c.vibe, count: Math.floor(pos(c.top, 100)), skipIds }));
                 const vibe = VIBES.find(v => v.key === c.vibe) ?? VIBES[0];
                 setPresets(false);

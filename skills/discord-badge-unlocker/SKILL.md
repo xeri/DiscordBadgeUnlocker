@@ -25,7 +25,7 @@ All commands below run from the repo root. `$S` is `skills/discord-badge-unlocke
 Ask only what you can't infer. You need one of these:
 - **Specific games** with hours.
 - **Random**, like the original scripts: a game count and total hours, or "max" (250 games, 6,000h).
-- **A vibe and a size**, e.g. "120 cozy games". The vibes are `popular`, `competitive`, `cozy`, `adventurer`, `builder` and `friends`.
+- **A vibe and a size**, e.g. "120 cozy games". The vibes are `popular`, `competitive`, `cozy`, `rpg`, `strategy` and `coop`.
 - **An hour budget**, e.g. "the most hours possible since 2026-09-15". That budget is floor(hours from that date at 00:00 UTC to now); put the date in `trackStart`.
 
 Also ask about must-include games, games to leave out, and whether they want a dry run first.

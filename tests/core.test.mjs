@@ -223,12 +223,14 @@ test("vibes come from each game's top tags", () => {
             { id: "4", tags: ["Online Co-Op", "Horror"] }
         ]
     };
-    assert.deepEqual(vibesFor(["Cozy", "Farming Sim"]), ["cozy", "builder"]);
+    assert.deepEqual(vibesFor(["Cozy", "Farming Sim"]), ["cozy", "strategy"]);
     assert.deepEqual(pickFromRanking(ranking, { vibe: "cozy" }).map(g => g.id), ["2"]);
     assert.deepEqual(pickFromRanking(ranking, { vibe: "popular", count: 2, skipIds: new Set(["1"]) }).map(g => g.id), ["2", "3"]);
     assert.deepEqual(pickFromRanking(ranking, { vibe: "nope" }), []);
+    assert.deepEqual(pickFromRanking(ranking, { vibe: "friends" }).map(g => g.id), ["4"]); // old key for "coop"
+    assert.deepEqual(pickFromRanking(ranking, { skipIds: { has: id => id !== "3" } }).map(g => g.id), ["3"]); // any .has()
     assert.equal(countByVibe(ranking).popular, 4);
-    assert.equal(countByVibe(ranking).friends, 1);
+    assert.equal(countByVibe(ranking).coop, 1);
 });
 
 test("pickRandom is seeded and skips games without a real executable", () => {

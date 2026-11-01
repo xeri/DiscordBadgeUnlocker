@@ -11,13 +11,14 @@
 //   3. Steam games map to Discord app IDs through the catalog's Steam SKUs (name match as a fallback).
 //   4. Each game keeps its top SteamSpy user tags (hand-tagged for games not on Steam); the generator
 //      turns tags into "vibes" at runtime (VIBES in core.mjs), so changing a vibe needs no rebuild.
-// Non-games (tools, overlays, wallpapers), idle/clicker farms, adult games, demos and servers are dropped.
+// Non-games (tools, overlays, wallpapers), idle/clicker farms, adult games, demos and servers are dropped, and so
+// are games Discord lists no executables for (untested for the badges, so the presets leave them out).
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { VIBES, countByVibe, normalizeText, pickExe } from "../skills/discord-badge-unlocker/scripts/core.mjs";
+import { VIBES, countByVibe, hasExecutables, normalizeText, pickExe } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, all) =>
@@ -317,6 +318,7 @@ for (const row of steamRows.values()) {
     if (row.name && (IDLE_NAME.test(row.name) || EXCLUDE_NAMES.has(normalizeText(row.name)))) { dropped.push(`${row.name} (name)`); continue; }
     const app = byId.get(STEAM_TO_DISCORD.get(row.appid)) ?? bySteam.get(row.appid) ?? byName.get(normalizeText(String(row.name ?? "").replace(/[™®©]/g, "")));
     if (!app) { dropped.push(`${row.name} (not in Discord's catalog)`); continue; }
+    if (!hasExecutables(app)) { dropped.push(`${row.name} (no executables in Discord's catalog)`); continue; }
     const id = String(app.id);
     const prev = entries.get(id);
     if (prev) { prev.score += row.score; continue; } // two Steam apps → one Discord game
@@ -326,6 +328,7 @@ for (const row of steamRows.values()) {
 for (const adj of ADJUST) {
     const app = byId.get(adj.id);
     if (!app) { log(`  ADJUST: ${adj.name} (${adj.id}) not in catalog`); continue; }
+    if (!hasExecutables(app)) { log(`  ADJUST: ${adj.name} has no executables in Discord's catalog; left out`); continue; }
     let entry = entries.get(adj.id);
     if (adj.estimate != null) {
         if (!entry) {
@@ -378,7 +381,8 @@ const out = {
     metric: "Estimated PC hours played in the last 30 days, in millions",
     method: "Steam: steamcharts.com 30-day hours (official chart API for games it misses). Games mostly played " +
         "through other launchers get a launcher factor; games not on Steam get an estimate from the sources below. " +
-        "Each game keeps its top SteamSpy tags; vibes are derived from them. Tools, idle games, adult games, demos and servers are excluded.",
+        "Each game keeps its top SteamSpy tags; vibes are derived from them. Tools, idle games, adult games, demos, servers " +
+        "and games Discord lists no executable for are excluded.",
     sources: SOURCES,
     count: games.length,
     games

@@ -444,15 +444,15 @@ export const VIBES = Object.freeze([
     { key: "popular", label: "Popular", blurb: "The most played games of any kind", tags: null },
     { key: "competitive", label: "Competitive", blurb: "Ranked shooters, MOBAs, battle royales, fighters",
         tags: ["Competitive", "eSports", "PvP", "MOBA", "Battle Royale", "Tactical Shooter", "Hero Shooter", "Extraction Shooter", "Fighting", "Auto Battler"] },
-    { key: "cozy", label: "Cozy & cute", blurb: "Anime, gacha, cute and cozy games, colorful indies",
+    { key: "cozy", label: "Cozy", blurb: "Anime, gacha, cute and cozy games, colorful indies",
         tags: ["Cute", "Anime", "Cozy", "Wholesome", "Cartoony", "Gacha", "Colorful", "Hand-drawn", "Pixel Graphics"],
         not: ["Horror", "Gore", "Psychological Horror", "FPS", "Shooter", "Third-Person Shooter", "Hero Shooter", "Looter Shooter", "Arena Shooter"] },
-    { key: "adventurer", label: "Adventurer", blurb: "RPGs, open worlds, MMOs, story games",
+    { key: "rpg", label: "RPGs", blurb: "RPGs, open worlds, MMOs, story games",
         tags: ["RPG", "Action RPG", "JRPG", "CRPG", "MMORPG", "Open World", "Story Rich", "Souls-like"] },
-    { key: "builder", label: "Builder", blurb: "Strategy, sims, sandbox and survival-crafting",
+    { key: "strategy", label: "Strategy", blurb: "Strategy, sims, sandbox and survival-crafting",
         tags: ["Grand Strategy", "RTS", "4X", "Turn-Based Strategy", "City Builder", "Colony Sim", "Automation", "Base Building",
             "Sandbox", "Crafting", "Open World Survival Craft", "Building", "Management", "Resource Management", "Automobile Sim", "Farming Sim", "Life Sim"] },
-    { key: "friends", label: "With friends", blurb: "Co-op, party games and horror nights",
+    { key: "coop", label: "Co-op", blurb: "Co-op, party games and horror nights",
         tags: ["Online Co-Op", "Co-op", "Co-op Campaign", "Party Game", "Social Deduction"],
         not: ["Competitive", "eSports", "MOBA", "Battle Royale", "Tactical Shooter"] }
 ]);
@@ -460,6 +460,10 @@ export const VIBES = Object.freeze([
 const fits = (vibe, top) => !!vibe.tags && vibe.tags.some(tag => top.includes(tag)) && !(vibe.not ?? []).some(tag => top.includes(tag));
 
 // The vibe keys a game's tags fit ("popular" never: it has no tag filter).
+// Earlier vibe keys, still accepted (saved pages, old commands).
+const VIBE_ALIASES = Object.freeze({ adventurer: "rpg", builder: "strategy", friends: "coop" });
+export const vibeKey = key => VIBE_ALIASES[key] ?? key;
+
 export function vibesFor(tags) {
     const top = (tags ?? []).slice(0, VIBE_TAG_DEPTH);
     return VIBES.filter(vibe => fits(vibe, top)).map(vibe => vibe.key);
@@ -471,7 +475,9 @@ export function parseRanking(data) {
 }
 
 // The top `count` games for a vibe ("popular" = no filter), skipping ids already chosen.
+// skipIds: anything with .has(id).
 export function pickFromRanking(ranking, { vibe = "popular", count = 150, skipIds = null } = {}) {
+    vibe = vibeKey(vibe);
     const meta = VIBES.find(v => v.key === vibe);
     const fit = vibe === "popular" ? () => true : game => !!meta && fits(meta, (game.tags ?? []).slice(0, VIBE_TAG_DEPTH));
     return ranking.games.filter(game => fit(game) && !skipIds?.has(game.id)).slice(0, Math.max(0, count));

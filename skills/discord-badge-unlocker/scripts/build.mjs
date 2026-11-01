@@ -5,7 +5,7 @@
 //   node build.mjs slim-catalog --in games.json [--out catalog.min.json]
 //   node build.mjs search [--catalog F] "query" [--limit 20]
 //   node build.mjs vibes [--ranking F]
-//   node build.mjs pick [--vibe popular|competitive|cozy|adventurer|builder|friends] [--top 150]
+//   node build.mjs pick [--vibe popular|competitive|cozy|rpg|strategy|coop] [--top 150]
 //        [--mode weighted|even|flat] [--total 5000] [--hours 1.5] [--add selection.json]
 //        [--track-start YYYY-MM-DD] [--ranking F] [--out selection.json]
 //   node build.mjs random [--count 125] [--hours 5000] [--max] [--seed N] [--catalog F] [--out selection.json]
@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import {
     HOUR_MODES, ORIGINAL_MAX, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, isCatalogSnapshot, loadCatalog,
     normalizeCatalog, normalizeSelection, parseCatalog, parseRanking, pickFromRanking, pickRandom, resolveSelection,
-    searchCatalog, serializeCatalog, splitEvenly, summarize, validateTable
+    searchCatalog, serializeCatalog, splitEvenly, summarize, validateTable, vibeKey
 } from "./core.mjs";
 import { loadTemplates, normalizeOptions, renderGamesMarkdown, renderScripts } from "./templates.mjs";
 
@@ -137,7 +137,7 @@ async function emitSelection(args, selection, message) {
 
 async function cmdPick(args) {
     const { ranking } = await readRanking(args);
-    const vibe = str(args, "vibe", "popular");
+    const vibe = vibeKey(str(args, "vibe", "popular"));
     const meta = VIBES.find(v => v.key === vibe);
     if (!meta) throw new Error(`Unknown vibe "${vibe}". Use one of: ${VIBES.map(v => v.key).join(", ")}`);
     const mode = str(args, "mode", "weighted");
