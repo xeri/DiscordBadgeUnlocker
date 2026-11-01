@@ -121,14 +121,33 @@ ${rows.join(",\n")}
     }
 
     // Claimed history is shared by all three scripts and kept per Discord account, so running any
-    // mix of them (or one twice) never sends a game twice. Discord usually hides localStorage from
-    // the console, so the history is mirrored on window and may only last until Discord reloads.
+    // mix of them (or one twice) never sends a game twice. Discord hides window.localStorage from
+    // the console, so it's reached through a hidden same-origin iframe, which keeps the history
+    // after a reload. It's also mirrored on window in case that fails.
+    let storageFrame = null;
+
     function getStorage() {
         try {
-            return window.localStorage ?? null;
+            if (window.localStorage) return window.localStorage;
+        } catch (_) {}
+        try {
+            if (!storageFrame) {
+                storageFrame = document.createElement("iframe");
+                storageFrame.style.display = "none";
+                document.body.appendChild(storageFrame);
+            }
+            return storageFrame.contentWindow?.localStorage ?? null;
         } catch (_) {
             return null;
         }
+    }
+
+    // Removes the iframe once pending (a run that may still be saving its result) settles.
+    function releaseStorage(pending) {
+        Promise.resolve(pending).catch(() => {}).finally(() => {
+            try { storageFrame?.remove(); } catch (_) {}
+            storageFrame = null;
+        });
     }
 
     function getClaimedSet(userId) {
@@ -196,7 +215,8 @@ function renderHeader(output, table, trackStart, options) {
     lines.push("Run: Discord desktop > Ctrl+Shift+I > Console > paste > Enter.");
     lines.push("If the console asks, type: allow pasting");
     lines.push("Only the desktop app counts, and only with Settings > \"Use data to personalize");
-    lines.push("my Discord experience\" on. Game Time counts time from 2025-12-08 on.");
+    lines.push("my Discord experience\" on; the script checks that setting before sending.");
+    lines.push("Game Time counts time from 2025-12-08 on.");
     if (output.engine === "telemetry") {
         lines.push("Sends each game once, with its hours, through Discord's own HTTP client.");
         lines.push("It never reads your token. Games already sent to this account are skipped.");
@@ -210,8 +230,10 @@ function renderHeader(output, table, trackStart, options) {
     }
     lines.push("");
     lines.push("Commands:");
+    const run = `${ns}.${output.key === "gameTime" ? "boost" : "run"}`;
     const commands = output.engine === "telemetry"
-        ? [[`await ${ns}.${output.key === "gameTime" ? "boost" : "run"}()`, "send any games not sent yet"]]
+        ? [[`await ${run}()`, "send any games not sent yet"],
+            [`await ${run}({ force: true })`, "send even if the setting reads as off"]]
         : [[`await ${ns}.claim()`, "send any games not sent yet"], [`${ns}.next()`, "show the next game"]];
     commands.push([`${ns}.resetClaimed()`, "forget what was sent (the next run resends)"], [`${ns}.stop()`, ""]);
     const width = Math.max(...commands.map(([cmd]) => cmd.length)) + 3;
@@ -348,9 +370,10 @@ export function renderFirstHeartbeat(input, templates) {
     if (o.dryRun) lines.push("DRY RUN: builds every event but sends nothing.");
     lines.push("", "Run: Discord desktop > Ctrl+Shift+I > Console > paste > Enter.", "If the console asks, type: allow pasting",
         "Each run sends another session and adds its hours. It ignores the main scripts' sent history.",
+        "It checks \"Use data to personalize my Discord experience\" is on first.",
         "", "Commands:",
         `  await window.${out.ns}.run()   send the session`,
-        ...(o.clock === "system" ? [`  await window.${out.ns}.run({ force: true })   send even if the system clock is off`] : []),
+        `  await window.${out.ns}.run({ force: true })   send even if ${o.clock === "system" ? "the system clock or that setting is" : "that setting reads as"} off`,
         `  window.${out.ns}.stop()`,
         "", "Based on everyoneexe/discord-game-badge-presence (GPL-3.0):", ORIGINAL_REPO);
     const header = ["/*", ...lines.map(line => (line ? ` * ${line}` : " *")), " */"].join("\n");

@@ -102,6 +102,10 @@ It runs all three scripts in a mocked Discord client and checks the following:
 - every ordered pair of scripts sends nothing on the second run
 - another account in the same client still gets everything
 - `resetClaimed()` resends, and the Variety rotation stops after its claim
+- the HTTP client and Dispatcher lookups skip Discord's translation Proxy, which answers every property name
+- every script stops before sending if "Use data to personalize my Discord experience" is off, and only warns if the setting can't be read
+- rate limits (429) and lost requests are retried with the same events
+- with `localStorage` hidden, the history goes through an iframe and survives a reload
 
 Don't hand over files that fail.
 
@@ -109,9 +113,9 @@ Don't hand over files that fail.
 Give the user the Main script (`discord-badge-unlocker.js`), plus `GAMES.md`, and tell them:
 - **Run it:** in the Discord desktop app, press Ctrl+Shift+I → Console. Type `allow pasting` if asked, then paste and press Enter.
 - **Run only one script.** The advanced ones are alternatives, not extra steps.
-- **Setting:** progress only counts with "Use data to personalize my Discord experience" on (Discord's help article).
+- **Setting:** progress only counts with "Use data to personalize my Discord experience" on (Discord's help article). The scripts check it and stop if it's off; `run({ force: true })` sends anyway.
 - **Wait:** badges can take 24–48h to update. Don't re-run it in the meantime.
-- **Resending:** `window.__discordBadgeUnlocker.resetClaimed()` forgets what was sent. Discord usually hides `localStorage`, so the history may reset when Discord reloads.
+- **Resending:** `window.__discordBadgeUnlocker.resetClaimed()` forgets what was sent. Discord hides `localStorage` from the console, so the scripts reach it through a hidden iframe; the history should survive a reload (not yet confirmed in Discord).
 - **Risk:** Educational & Research Use Only: Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](https://github.com/xeri/DiscordBadgeUnlocker/blob/main/DISCLAIMER.md).
 
 Credit: based on [everyoneexe/discord-game-badge-presence](https://github.com/everyoneexe/discord-game-badge-presence) (GPL-3.0).

@@ -78,8 +78,17 @@ try {
 
 // ---------- mocked Discord client ----------
 
-function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
+// consent: what /users/@me/consent says ("error" fails the request). science(n): the n-th /science
+// answer, a status or { status, retryAfter }; status 0 never answers. hideLocalStorage: Discord's
+// deleted window.localStorage (the scripts reach it through an iframe). hideHttpUtils: the HTTP client
+// can only be found among cached module exports.
+function createDiscord({
+    userId = "111111111111111111", storage = null, consent = { personalization: true, usage: true },
+    science = () => 204, hideLocalStorage = false, hideHttpUtils = false
+} = {}) {
     const env = { userId, username: "tester" };
+    let scienceCalls = 0;
+    const frames = { created: 0, removed: 0 };
     const posts = [];
     const logs = [];
     const dispatched = [];
@@ -122,15 +131,31 @@ function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
         text: async () => (json == null ? "" : JSON.stringify(json))
     });
 
+    const consentBody = () => ({
+        personalization: { consented: consent.personalization }, usage_statistics: { consented: consent.usage }
+    });
+    const scienceAnswer = () => {
+        const answer = science(scienceCalls++);
+        return typeof answer === "number" ? { status: answer } : answer;
+    };
+
+    // Discord's own client rejects anything that isn't 2xx.
     const httpClient = {
         async get({ url }) {
             if (url === "/users/@me") return reply(200, { id: env.userId, username: env.username, analytics_token: "analytics-token" });
+            if (url === "/users/@me/consent") {
+                if (consent === "error") throw Object.assign(new Error("HTTP 500"), { status: 500 });
+                return reply(200, consentBody());
+            }
             return reply(404, null);
         },
         async post({ url, body }) {
             if (url !== "/science") return reply(404, null);
+            const { status, retryAfter } = scienceAnswer();
+            if (status === 0) throw new Error("socket hang up");
+            if (status >= 300) throw Object.assign(new Error(`HTTP ${status}`), { status, body: retryAfter ? { retry_after: retryAfter } : {} });
             posts.push({ via: "http-client", events: body.events });
-            return reply(204, null);
+            return reply(status, null);
         },
         async del() { return reply(204, null); }
     };
@@ -146,10 +171,21 @@ function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
     const userStore = { getName: () => "UserStore", getCurrentUser: () => ({ id: env.userId }) };
     const dispatcher = { _subscriptions: { RUNNING_GAMES_CHANGE: [] }, dispatch: action => dispatched.push(action.type), subscribe() {} };
 
+    // Discord's translated messages: a Proxy that hands back a function for any name and warns about
+    // unknown ones. It comes first, so a lookup without a guard picks it.
+    const i18n = new Proxy({}, {
+        get: (_, key) => {
+            if (typeof key !== "string" || key === "then") return undefined;
+            sandbox.console.warn(`Requested message ${key} does not have a value in the requested locale`);
+            return () => "";
+        }
+    });
+
     const modules = { 7: { HTTP: httpClient } };
     const requireFn = id => modules[id];
-    requireFn.m = { 7: function () { /* HTTPUtils */ } };
+    requireFn.m = hideHttpUtils ? {} : { 7: function () { /* HTTPUtils */ } };
     requireFn.c = {
+        0: { exports: { messages: i18n } },
         1: { exports: { default: runStore } },
         2: { exports: authStore },
         3: { exports: { Z: userStore } },
@@ -168,7 +204,14 @@ function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
         btoa,
         atob,
         navigator: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) discord/1.0.9253" },
-        localStorage,
+        localStorage: hideLocalStorage ? undefined : localStorage,
+        document: {
+            createElement: () => {
+                frames.created += 1;
+                return { style: {}, contentWindow: { localStorage }, remove() { frames.removed += 1; } };
+            },
+            body: { appendChild() {} }
+        },
         setTimeout: setTimeoutFake,
         clearTimeout: clearTimeoutFake,
         addEventListener: () => {},
@@ -177,10 +220,16 @@ function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
             pop: () => {}
         },
         async fetch(url, init = {}) {
+            if (String(url).startsWith("/api/v9/users/@me/consent")) {
+                return consent === "error" ? reply(500, null) : reply(200, consentBody());
+            }
             if (String(url).startsWith("/api/v9/users/@me")) return reply(200, { id: env.userId, analytics_token: "analytics-token" });
             if (url === "/api/v9/science") {
+                const { status, retryAfter } = scienceAnswer();
+                if (status === 0) throw new Error("Failed to fetch");
+                if (status >= 300) return reply(status, retryAfter ? { retry_after: retryAfter } : { message: "nope" });
                 posts.push({ via: "fetch", events: JSON.parse(init.body).events });
-                return reply(204, null);
+                return reply(status, null);
             }
             return reply(404, null);
         }
@@ -199,7 +248,8 @@ function createDiscord({ userId = "111111111111111111", storage = null } = {}) {
         return posts.slice(before).flatMap(post => post.events);
     }
 
-    return { env, sandbox, posts, logs, dispatched, store, run, runStore, original, pendingLong };
+    return { env, sandbox, posts, logs, dispatched, store, run, runStore, original, pendingLong, frames,
+        get scienceCalls() { return scienceCalls; } };
 }
 
 function finals(events) {
@@ -288,6 +338,71 @@ if (dryRun) {
         const events = await discord.run("main");
         check(finals(events).length === ids.length - Math.min(3, ids.length), "Legacy fixed-list history is respected",
             `${finals(events).length}/${ids.length} sent`);
+    }
+
+    // The Rich Presence uses the real Dispatcher, not Discord's translation Proxy.
+    {
+        const discord = createDiscord();
+        await discord.run("variety");
+        check(discord.dispatched.includes("RUNNING_GAMES_CHANGE") && discord.dispatched.includes("LOCAL_ACTIVITY_UPDATE") &&
+            !discord.logs.some(line => /Requested message/.test(line)),
+        "multi-game-presence.js: presence goes to the real Dispatcher, not the translation Proxy");
+    }
+
+    // The HTTP client is found among cached exports, past the translation Proxy.
+    {
+        const discord = createDiscord({ hideHttpUtils: true });
+        await discord.run("main");
+        check(discord.posts.length > 0 && discord.posts.every(post => post.via === "http-client") &&
+            finals(discord.posts.flatMap(post => post.events)).length === ids.length,
+        "Main script finds Discord's HTTP client past the translation Proxy");
+    }
+
+    // "Use data to personalize my Discord experience" off: nothing is sent or marked as sent.
+    for (const key of KEYS) {
+        const discord = createDiscord({ consent: { personalization: false, usage: true } });
+        const events = await discord.run(key);
+        check(events.length === 0 && discord.scienceCalls === 0 && discord.store.size === 0 &&
+            discord.logs.some(line => /personalize my Discord experience" is off/.test(line)),
+        `${scripts[key].file}: stops before sending when personalization is off`);
+    }
+    {
+        const discord = createDiscord({ consent: { personalization: false, usage: true } });
+        await discord.run("main");
+        const before = discord.posts.length;
+        await discord.sandbox.__discordBadgeUnlocker.run({ force: true });
+        check(finals(discord.posts.slice(before).flatMap(post => post.events)).length === ids.length, "run({ force: true }) sends anyway");
+    }
+    for (const key of KEYS) {
+        const discord = createDiscord({ consent: "error" });
+        const events = await discord.run(key);
+        check(finals(events).length === ids.length && discord.logs.some(line => /Couldn't read/.test(line)),
+            `${scripts[key].file}: setting unreadable: warns, still sends`);
+    }
+
+    // Rate limits and requests that get no answer are retried with the same events.
+    for (const key of KEYS) {
+        const discord = createDiscord({ science: n => (n === 1 || n === 2 ? { status: 429, retryAfter: 1 } : n === 4 ? 0 : 204) });
+        const events = await discord.run(key);
+        const { length } = finals(events);
+        const sessions = new Set(finals(events).map(e => e.properties.game_session_id)).size;
+        check(length === ids.length && sessions === ids.length && discord.logs.some(line => /Rate limited/.test(line)),
+            `${scripts[key].file}: retries 429s and lost requests, every game once`, `${length} games`);
+    }
+
+    // Discord hides window.localStorage: the history goes through a hidden iframe and survives a reload.
+    {
+        const shared = new Map();
+        const discord = createDiscord({ storage: shared, hideLocalStorage: true });
+        await discord.run("main");
+        const saved = JSON.parse(shared.get("__discordBadgeUnlocker_claimed_ids:111111111111111111") ?? "[]");
+        discord.sandbox.__discordBadgeUnlocker.stop();
+        await new Promise(setImmediate);
+        check(saved.length === ids.length && discord.frames.created === 1 && discord.frames.removed === 1,
+            "Hidden localStorage: history saved through an iframe, removed on stop()");
+        const reloaded = createDiscord({ storage: shared, hideLocalStorage: true });
+        const events = await reloaded.run("variety");
+        check(events.length === 0, "…and after a reload nothing is sent again");
     }
 
     // resetClaimed() makes the next run send everything again.

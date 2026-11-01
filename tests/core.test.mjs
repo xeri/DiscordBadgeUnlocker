@@ -313,8 +313,9 @@ test("normalizeFirstHeartbeat needs a game, a date and a method", () => {
     assert.equal(normalizeFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 1, timeZone: "UTC" }).timeZone, null);
 });
 
-// Runs a rendered first-heartbeat script against a mocked Discord client; `osOffset` moves the "system" clock.
-async function runFirstHeartbeat(text, { osOffset = 0 } = {}) {
+// Runs a rendered first-heartbeat script against a mocked Discord client; `osOffset` moves the "system" clock,
+// `personalization` is what /users/@me/consent reports, `science(n)` answers the n-th /science request.
+async function runFirstHeartbeat(text, { osOffset = 0, personalization = true, science = () => 204 } = {}) {
     const posts = [];
     const logs = [];
     const ctx = { console: { log: m => logs.push(m), warn: m => logs.push(m), error: m => logs.push(m) },
@@ -322,12 +323,22 @@ async function runFirstHeartbeat(text, { osOffset = 0 } = {}) {
     ctx.window = ctx;
     vm.createContext(ctx);
     if (osOffset) vm.runInContext(`(() => { const now = Date.now; Date.now = () => now.call(Date) + ${osOffset}; })()`, ctx);
+    let calls = 0;
     const client = {
-        get: async () => ({ body: { id: "111111111111111111", username: "tester", analytics_token: "tok" } }),
-        post: async req => { posts.push({ events: req.body.events, page: vm.runInContext("[Date.now(), new Date().getTimezoneOffset()]", ctx) }); return { ok: true, status: 204 }; },
+        get: async ({ url }) => ({ body: url === "/users/@me/consent"
+            ? { personalization: { consented: personalization }, usage_statistics: { consented: true } }
+            : { id: "111111111111111111", username: "tester", analytics_token: "tok" } }),
+        post: async req => {
+            const status = science(calls++);
+            if (status !== 204) throw Object.assign(new Error(`HTTP ${status}`), { status, body: { retry_after: 1 } });
+            posts.push({ events: req.body.events, page: vm.runInContext("[Date.now(), new Date().getTimezoneOffset()]", ctx) });
+            return { ok: true, status: 204 };
+        },
         del: async () => ({})
     };
-    const requireFn = () => ({ default: client });
+    // Discord's translated messages come first: a Proxy with a function under every name.
+    const i18n = new Proxy({}, { get: (_, key) => (key === "then" ? undefined : () => "") });
+    const requireFn = () => ({ default: i18n, HTTP: client });
     requireFn.m = { 1: () => "HTTPUtils" };
     requireFn.c = {};
     ctx.webpackChunkdiscord_app = { push: ([, , fn]) => fn(requireFn), pop() {} };
@@ -378,6 +389,19 @@ test("the system clock refuses a clock that's off unless forced", async () => {
     assert.ok(run.logs.some(line => /System clock reads/.test(line)));
     await run.ctx.window.__firstHeartbeat.run({ force: true });
     assert.equal(run.posts.length, 1);
+});
+
+test("first heartbeat checks the personalize setting and retries a rate limit", async () => {
+    const templates = await loadTemplates();
+    const { text } = renderFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 2 }, templates);
+    const off = await runFirstHeartbeat(text, { personalization: false });
+    assert.equal(off.posts.length, 0);
+    assert.ok(off.logs.some(line => /personalize my Discord experience" is off/.test(line)));
+    await off.ctx.window.__firstHeartbeat.run({ force: true });
+    assert.equal(off.posts.length, 1);
+    const limited = await runFirstHeartbeat(text, { science: n => (n === 0 ? 429 : 204) });
+    assert.equal(limited.posts.length, 1);
+    assert.ok(limited.logs.some(line => /Rate limited/.test(line)));
 });
 
 test("the page clock shift fakes local time in a time zone, then restores it", async () => {

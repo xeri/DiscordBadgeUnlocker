@@ -84,9 +84,25 @@
         }));
     }
 
+    // Discord's translated messages are a Proxy that answers every property name with a function,
+    // so they'd pass the Dispatcher check. A real object has nothing under a made-up name.
+    function answersAnything(value) {
+        try {
+            return value[`__${NS}_probe`] !== undefined;
+        } catch (_) {
+            return true;
+        }
+    }
+
     function findDispatcher(exports) {
-        return quietly(() => exports.find(value => value && typeof value.dispatch === "function" &&
-            typeof value.subscribe === "function" && value._subscriptions));
+        return quietly(() => exports.find(value => {
+            try {
+                return value && !answersAnything(value) && typeof value.dispatch === "function" &&
+                    typeof value.subscribe === "function" && value._subscriptions;
+            } catch (_) {
+                return false;
+            }
+        }));
     }
 
     try {
@@ -217,6 +233,23 @@
             const fingerprint = await generateFingerprint(userId);
             auth = { token, userId, analyticsToken, fingerprint, superProps };
             return auth;
+        }
+
+        // Discord's /users/@me/consent. "personalization" is "Use data to personalize my Discord
+        // experience", which badge progress needs; "usage_statistics" is "Use data to improve Discord".
+        async function readConsent(currentAuth) {
+            const unknown = { personalization: null, usage: null };
+            try {
+                const res = await fetch("/api/v9/users/@me/consent", {
+                    headers: { "authorization": currentAuth.token, "x-super-properties": currentAuth.superProps }
+                });
+                if (!res.ok) return unknown;
+                const data = await res.json();
+                const flag = value => (typeof value === "boolean" ? value : null);
+                return { personalization: flag(data?.personalization?.consented), usage: flag(data?.usage_statistics?.consented) };
+            } catch (_) {
+                return unknown;
+            }
         }
 
         let seq = 0;
@@ -479,6 +512,22 @@
                         `Run window.${NS}.resetClaimed() first if you really want to send them again.`);
                     return 0;
                 }
+                if (!CONFIG.dryRun) {
+                    // Without the personalization setting nothing counts, so don't mark games as sent.
+                    const consent = await readConsent(currentAuth);
+                    if (consent.personalization === false) {
+                        throw new Error("\"Use data to personalize my Discord experience\" is off (User Settings > " +
+                            "Data & Privacy), so Discord won't count this. Turn it on, then paste this again.");
+                    }
+                    if (consent.personalization === null) {
+                        console.warn(`${LABEL} Couldn't read "Use data to personalize my Discord experience"; make sure it's on.`);
+                    }
+                    if (consent.usage === false) {
+                        console.warn(`${LABEL} "Use data to improve Discord" is off. Discord's help article only needs the ` +
+                            "personalization setting, but turn this on too if the badges don't move.");
+                    }
+                    if (stopped) return 0;
+                }
                 console.log(`${LABEL} Claiming ${targetGames.length} games ` +
                     `(${sumHours(targetGames).toFixed(1)}h, fixed hours per game, ${batchSize}/batch, ${delayMs}ms delay)...`);
                 if (CONFIG.dryRun) console.warn(`${LABEL} Dry-run mode is ON: nothing will be sent.`);
@@ -535,6 +584,7 @@
             current = null;
             for (const [key, fn] of Object.entries(original)) runStore[key] = fn;
             dispatchRemoval(previous);
+            releaseStorage(lastRun);
             delete window[NS];
             console.log(`${LABEL} Stopped and store restored.`);
         };

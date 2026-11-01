@@ -30,10 +30,21 @@
         return requireFn;
     }
 
+    // Discord's translated messages are a Proxy that answers every property name with a function,
+    // so they'd pass the HTTP client check. A real object has nothing under a made-up name.
+    function answersAnything(value) {
+        try {
+            return value[`__${NS}_probe`] !== undefined;
+        } catch (_) {
+            return true;
+        }
+    }
+
     const HTTP_METHODS = ["get", "post", "del"];
 
     function isHttpClient(candidate) {
-        return candidate != null && HTTP_METHODS.every(method => typeof candidate[method] === "function");
+        return candidate != null && !answersAnything(candidate) &&
+            HTTP_METHODS.every(method => typeof candidate[method] === "function");
     }
 
     function exportedValues(value) {
@@ -187,25 +198,71 @@
         };
     }
 
+    // Seconds Discord asks to wait after a 429, from the body (retry_after) or the Retry-After header.
+    function retryAfterOf(response) {
+        const fromBody = Number(response?.body?.retry_after);
+        if (Number.isFinite(fromBody) && fromBody > 0) return fromBody;
+        let raw = null;
+        try {
+            const headers = response?.headers;
+            raw = typeof headers?.get === "function" ? headers.get("retry-after") : headers?.["retry-after"];
+        } catch (_) {}
+        const seconds = parseFloat(raw);
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+    }
+
+    // Retries rate limits (up to 3 times, waiting as long as Discord asks) and requests that got no
+    // answer (twice), resending the same events with the same session IDs.
     async function sendBatch(events, context) {
         if (CONFIG.dryRun) return true;
-        let status;
+        let limited = 0;
+        let lost = 0;
+        for (;;) {
+            let status;
+            let retryAfter = null;
+            try {
+                // The client attaches auth and super-properties headers itself.
+                const response = await context.client.post({
+                    url: "/science",
+                    body: { token: context.analyticsToken, events }
+                });
+                if (response?.ok || response?.status === 200 || response?.status === 204) return true;
+                status = response?.status;
+                retryAfter = retryAfterOf(response);
+            } catch (error) {
+                status = error?.status ?? error?.statusCode ?? 0;
+                retryAfter = retryAfterOf(error);
+            }
+            if (status === 429 && limited < 3) {
+                limited += 1;
+                const seconds = Math.min(60, Math.max(2, retryAfter ?? 2.5));
+                console.warn(`${LABEL} Rate limited (429). Retrying in ${seconds.toFixed(1)}s...`);
+                await wait(seconds * 1000);
+            } else if (status === 0 && lost < 2) {
+                lost += 1;
+                console.warn(`${LABEL} No answer from Discord. Retrying in 1.5s...`);
+                await wait(1500);
+            } else {
+                if (status) console.warn(`${LABEL} /science returned ${status}.`);
+                return false;
+            }
+            if (stopped) return false;
+        }
+    }
+
+    // Discord's /users/@me/consent. "personalization" is "Use data to personalize my Discord experience",
+    // which badge progress needs; "usage_statistics" is "Use data to improve Discord". null: unknown.
+    async function readConsent(client) {
         try {
-            // The client attaches auth and super-properties headers itself.
-            const response = await context.client.post({
-                url: "/science",
-                body: { token: context.analyticsToken, events }
-            });
-            if (response?.ok || response?.status === 200 || response?.status === 204) return true;
-            status = response?.status;
-        } catch (error) {
-            status = error?.status ?? error?.statusCode;
+            const response = await client.get({ url: "/users/@me/consent" });
+            const flag = value => (typeof value === "boolean" ? value : null);
+            return {
+                personalization: flag(response?.body?.personalization?.consented),
+                usage: flag(response?.body?.usage_statistics?.consented)
+            };
+        } catch (_) {
+            return { personalization: null, usage: null };
         }
-        if (status === 429) {
-            console.warn(`${LABEL} Rate limited; cooling down 5s.`);
-            await wait(5000);
-        }
-        return false;
     }
 
     const state = {
@@ -220,7 +277,7 @@
     let lastUserId = null;
     let lastRun = null;
 
-    async function send() {
+    async function send(force) {
         validateGames();
 
         const requireFn = webpackRequire();
@@ -242,7 +299,24 @@
 
         console.log(`${LABEL} Connected as ${context.username} | sending ${sumHours(selected).toFixed(1)}h ` +
             `across ${selected.length} games (table: ${GAMES.length} games, ${TOTAL_HOURS}h)`);
-        if (CONFIG.dryRun) console.warn(`${LABEL} Dry-run mode is ON: nothing will be sent.`);
+        if (CONFIG.dryRun) {
+            console.warn(`${LABEL} Dry-run mode is ON: nothing will be sent.`);
+        } else {
+            // Without the personalization setting nothing counts, so don't mark games as sent.
+            const consent = await readConsent(client);
+            if (consent.personalization === false && !force) {
+                throw new Error("\"Use data to personalize my Discord experience\" is off (User Settings > Data & Privacy), " +
+                    "so Discord won't count this. Turn it on, then run this again " +
+                    `(or await window.${NS}.run({ force: true }) to send anyway).`);
+            }
+            if (consent.personalization === null) {
+                console.warn(`${LABEL} Couldn't read "Use data to personalize my Discord experience"; make sure it's on.`);
+            }
+            if (consent.usage === false) {
+                console.warn(`${LABEL} "Use data to improve Discord" is off. Discord's help article only needs the ` +
+                    "personalization setting, but turn this on too if the badges don't move.");
+            }
+        }
         if (stopped) return 0;
 
         let sentGames = 0;
@@ -290,20 +364,21 @@
         return sentHours;
     }
 
-    function run() {
+    function run({ force = false } = {}) {
         if (stopped) return Promise.resolve(0);
         if (running) {
             console.warn(`${LABEL} A run is already in progress.`);
             return lastRun;
         }
         running = true;
-        lastRun = send().finally(() => { running = false; });
+        lastRun = send(force === true).finally(() => { running = false; });
         return lastRun;
     }
 
     function stop() {
         if (stopped) return;
         stopped = true;
+        releaseStorage(lastRun);
         if (window[NS]?.stop === stop) delete window[NS];
         console.log(`${LABEL} Stopped.`);
     }
