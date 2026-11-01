@@ -111,6 +111,6 @@ Give the user the Main script (`discord-badge-unlocker.js`), plus `GAMES.md`, an
 - **Run only one script.** The advanced ones are alternatives, not extra steps.
 - **Wait:** badges can take 24–48h to update. Don't re-run it in the meantime.
 - **Resending:** `window.__discordBadgeUnlocker.resetClaimed()` forgets what was sent. Discord usually hides `localStorage`, so the history may reset when Discord reloads.
-- **Risk:** this sends synthetic play-time telemetry, which breaks Discord's Terms of Service. Their account, their risk.
+- **Risk:** Educational & Research Use Only: Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](https://github.com/xeri/DiscordBadgeUnlocker/blob/main/DISCLAIMER.md).
 
 Credit: based on [everyoneexe/discord-game-badge-presence](https://github.com/everyoneexe/discord-game-badge-presence) (GPL-3.0).
