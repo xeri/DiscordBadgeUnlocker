@@ -137,7 +137,7 @@ function build(root, catalog, templates) {
   </div>
 </section>
 
-<details class="card advanced">
+<details class="advanced">
   <summary>Advanced</summary>
   <div class="adv">
     <div class="adv-row"><span class="label">Played since</span><input type="date" data-ref="trackStart" aria-label="Played since">
