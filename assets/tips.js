@@ -2,8 +2,9 @@
 //   data-tip="text"          the hint (update it any time; a visible tip follows along)
 //   data-tip-side="right"    open to the right instead of above (flips when there's no room)
 //   data-tip-overflow        hint = the element's own text, only while it's cut off by an ellipsis
+//   data-tip-click           a click or tap shows the hint too (info buttons)
 // Mouse/pen hover shows it after a short delay (instantly while another tip was just open);
-// keyboard focus shows it too. Touch taps never do.
+// keyboard focus shows it too. Touch taps don't, except on data-tip-click elements.
 
 const SHOW_DELAY = 400;
 const WARM_MS = 600;
@@ -29,6 +30,7 @@ export function initTips(doc = document) {
     let ownedDescribedBy = false;
     let pointer = null;   // last mouse position, so a delayed hint only opens if the mouse is still on it
     let dismissed = null; // closed by Escape or typing: stays closed until the mouse or focus leaves it
+    let pinned = false;   // opened by a click or tap: follows scrolling instead of closing
 
     const tipFor = el => {
         if (el.hasAttribute("data-tip-overflow")) return el.scrollWidth > el.clientWidth + 1 ? el.textContent.trim() : "";
@@ -61,10 +63,11 @@ export function initTips(doc = document) {
         tip.style.top = `${Math.round(y)}px`;
     }
 
-    function show(el) {
+    function show(el, { pin = false } = {}) {
         const value = tipFor(el);
         if (!value) return;
         target = el;
+        pinned = pin;
         text.textContent = value;
         tip.hidden = false;
         tip.classList.remove("in");
@@ -80,6 +83,7 @@ export function initTips(doc = document) {
         if (!target) return;
         if (ownedDescribedBy) target.removeAttribute("aria-describedby");
         target = null;
+        pinned = false;
         tip.hidden = true;
         tip.classList.remove("in");
         warmUntil = warm ? Date.now() + WARM_MS : 0;
@@ -155,6 +159,17 @@ export function initTips(doc = document) {
         keyboard = false;
         if (event.pointerType === "touch") hide();
     }, true);
+    // Info buttons: a click or tap shows the hint right away (touch has no hover).
+    doc.addEventListener("click", event => {
+        const el = event.target instanceof Element ? event.target.closest("[data-tip-click]") : null;
+        if (!el || el === target) return;
+        clearTimeout(showTimer);
+        showTimer = null;
+        pending = null;
+        dismissed = null;
+        close({ warm: false });
+        show(el, { pin: true });
+    });
     doc.addEventListener("focusin", event => {
         if (!keyboard) return;
         const el = tipTarget(event.target);
@@ -167,8 +182,14 @@ export function initTips(doc = document) {
         if (el === target) hide();
     });
 
-    // Scrolling (the page or any list) closes an open hint without warming up the next one.
-    window.addEventListener("scroll", () => close({ warm: false }), { capture: true, passive: true });
+    // Scrolling (the page or any list) closes an open hint without warming up the next one; one opened by a
+    // click or tap (tapping can scroll the button into view) follows its element while it stays on screen.
+    window.addEventListener("scroll", () => {
+        if (!pinned) { close({ warm: false }); return; }
+        const r = target.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > doc.documentElement.clientHeight) close({ warm: false });
+        else place();
+    }, { capture: true, passive: true });
     window.addEventListener("resize", hide, { passive: true });
     window.addEventListener("blur", event => { if (event.target === window) hide(); });
 

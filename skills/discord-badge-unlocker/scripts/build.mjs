@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
-    HOUR_MODES, ORIGINAL_MAX, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, loadCatalog,
+    HOUR_MODES, ORIGINAL_MAX, VIBES, assignHours, buildSearchIndex, countByVibe, formatCount, formatHours, isCatalogSnapshot, loadCatalog,
     normalizeCatalog, normalizeSelection, parseCatalog, parseRanking, pickFromRanking, pickRandom, resolveSelection,
     searchCatalog, serializeCatalog, splitEvenly, summarize, validateTable
 } from "./core.mjs";
@@ -59,7 +59,7 @@ async function readJson(path) {
 // Accepts a snapshot (ours) or a raw Discord games.json / detectable payload.
 async function readCatalogFile(path) {
     const data = await readJson(path);
-    if (data?.v === 1 && Array.isArray(data.games)) return { ...parseCatalog(data), path };
+    if (isCatalogSnapshot(data)) return { ...parseCatalog(data), path };
     return { games: normalizeCatalog(data), source: "file", fetchedAt: null, path };
 }
 

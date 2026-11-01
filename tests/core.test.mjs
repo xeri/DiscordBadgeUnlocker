@@ -6,8 +6,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     BADGE_TIERS, TIERS, catalogIndex, countByVibe, fitTier, formatCount, formatHours, minHours, normalizeCatalog,
-    normalizeSelection, pickFromRanking, pickRandom, resolveSelection, scaleTo, searchCatalog, sendGames, sendHours,
-    splitEvenly, sumHours, summarize, tierAim, tierFor, validateTable, vibesFor
+    normalizeSelection, parseCatalog, pickFromRanking, pickRandom, randomPool, resolveSelection, scaleTo, searchCatalog,
+    sendGames, sendHours, serializeCatalog, splitEvenly, sumHours, summarize, tierAim, tierFor, validateTable, vibesFor
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import { OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 
@@ -121,10 +121,35 @@ test("sumHours sums in tenths", () => {
 
 // ---------- catalog, search, selection ----------
 
+test("a real exe that happens to match the made-up name still counts as real", () => {
+    const games = normalizeCatalog([
+        { id: "1", name: "Geometry Dash", executables: [{ os: "win32", name: "geometrydash.exe" }] },
+        { id: "2", name: "Teamfight Tactics", executables: [] }
+    ]);
+    assert.deepEqual(games.map(g => [g.exe, g.noExe ?? false]), [["geometrydash.exe", false], ["teamfighttactics.exe", true]]);
+    assert.deepEqual(randomPool(games).map(g => g.id), ["1"]);
+});
+
+test("snapshots keep the noExe flag (v2) and still read v1", () => {
+    const games = [
+        { id: "1", name: "Geometry Dash", exe: "geometrydash.exe" },
+        { id: "2", name: "Teamfight Tactics", exe: "teamfighttactics.exe", noExe: true, aliases: ["TFT"] }
+    ];
+    const text = serializeCatalog(games, { source: "file", fetchedAt: "2026-11-01T00:00:00.000Z" });
+    assert.ok(text.includes('["2","Teamfight Tactics",null,["TFT"]]'));
+    assert.deepEqual(parseCatalog(JSON.parse(text)), { games, source: "file", fetchedAt: "2026-11-01T00:00:00.000Z" });
+    // v1 stored the made-up name, so it can only guess: a real exe named like it reads as noExe
+    const v1 = { v: 1, games: [["1", "Geometry Dash", "geometrydash.exe"], ["3", "Doom", "bin/doom.exe"]] };
+    assert.deepEqual(parseCatalog(v1).games.map(g => g.noExe ?? false), [true, false]);
+    assert.throws(() => parseCatalog({ v: 3, games: [] }), /Not a DiscordBadgeUnlocker catalog snapshot/);
+});
+
 test("normalizeCatalog keeps Windows games and dedupes aliases", () => {
     const byId = catalogIndex(CATALOG).byId;
     assert.equal(byId.get("100001").exe, "win64/valheim.exe");
-    assert.equal(byId.get("100008").exe, "noexegame.exe"); // no executables: slug, like the original
+    assert.equal(byId.get("100001").noExe, undefined);
+    assert.equal(byId.get("100008").exe, "noexegame.exe"); // no executables: made-up name, like the original Game Time script
+    assert.equal(byId.get("100008").noExe, true);
     assert.equal(byId.has("100009"), false); // non-Windows only: skipped
     assert.deepEqual(byId.get("100002").aliases, ["Valorant Riot"]);
 });

@@ -91,6 +91,9 @@ export function slugExe(name) {
     return `${String(name || "game").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "game"}.exe`;
 }
 
+// Discord lists at least one executable for the app (any OS). Games without one are untested for the badges.
+export const hasExecutables = app => Array.isArray(app?.executables) && app.executables.length > 0;
+
 export function pickExe(executables, name) {
     if (!Array.isArray(executables) || executables.length === 0) return slugExe(name);
     const clean = value => String(value).replace(/^>/, "").trim();
@@ -102,6 +105,9 @@ export function pickExe(executables, name) {
 
 // ---------- catalog ----------
 
+// Games: { id, name, exe, noExe?, aliases? }. noExe: Discord lists no executables for the game, so `exe` is
+// the made-up "<name>.exe". Whether Discord counts such games for Game Variety is untested; the original
+// Variety script left them out (its Game Time script sent them).
 export function normalizeCatalog(raw) {
     const list = Array.isArray(raw) ? raw : Array.isArray(raw?.applications) ? raw.applications : null;
     if (!list) throw new Error("Catalog is not a list of applications.");
@@ -124,24 +130,39 @@ export function normalizeCatalog(raw) {
             keys.add(key);
             aliases.push(text);
         }
-        games.push(aliases.length ? { id, name, exe, aliases } : { id, name, exe });
+        const noExe = !hasExecutables(app); // pickExe made one up
+        games.push(catalogGame(id, name, exe, noExe, aliases));
     }
     return games;
 }
 
-// Compact snapshot: one game per line so git diffs stay readable.
+function catalogGame(id, name, exe, noExe, aliases) {
+    const game = { id, name, exe };
+    if (noExe) game.noExe = true;
+    if (aliases?.length) game.aliases = aliases;
+    return game;
+}
+
+// Compact snapshot: one game per line so git diffs stay readable. Rows are [id, name, exe, aliases?];
+// v2 writes exe as null for noExe games (v1 wrote the made-up "<name>.exe" itself).
 export function serializeCatalog(games, { source = "discord-api", fetchedAt = new Date().toISOString() } = {}) {
-    const head = JSON.stringify({ v: 1, source, fetchedAt, count: games.length });
-    const rows = games.map(game => JSON.stringify(
-        game.aliases?.length ? [game.id, game.name, game.exe, game.aliases] : [game.id, game.name, game.exe]
-    ));
+    const head = JSON.stringify({ v: 2, source, fetchedAt, count: games.length });
+    const rows = games.map(game => {
+        const row = [game.id, game.name, game.noExe ? null : game.exe];
+        if (game.aliases?.length) row.push(game.aliases);
+        return JSON.stringify(row);
+    });
     return `${head.slice(0, -1)},"games":[\n${rows.join(",\n")}\n]}\n`;
 }
 
+export const isCatalogSnapshot = data => (data?.v === 1 || data?.v === 2) && Array.isArray(data.games);
+
 export function parseCatalog(data) {
-    if (data?.v !== 1 || !Array.isArray(data.games)) throw new Error("Not a DiscordBadgeUnlocker catalog snapshot.");
-    const games = data.games.map(([id, name, exe, aliases]) =>
-        aliases?.length ? { id, name, exe, aliases } : { id, name, exe });
+    if (!isCatalogSnapshot(data)) throw new Error("Not a DiscordBadgeUnlocker catalog snapshot.");
+    // v1 can't tell a made-up exe from a real one with the same name, so it guesses from the name.
+    const games = data.games.map(([id, name, exe, aliases]) => data.v === 1
+        ? catalogGame(id, name, exe, exe === slugExe(name), aliases)
+        : catalogGame(id, name, exe ?? slugExe(name), exe == null, aliases));
     return { games, source: data.source ?? "snapshot", fetchedAt: data.fetchedAt ?? null };
 }
 
@@ -484,12 +505,12 @@ export function assignHours(games, { mode = "weighted", total = 5000, perGame = 
 // The original game-time-presence.js defaults: 250 random games, 6,000h split evenly.
 export const ORIGINAL_MAX = Object.freeze({ games: 250, hours: 6000 });
 
-// Games with a real win32 executable (no made-up "<slug>.exe"), like the original's catalog filter.
-// Cached per catalog array: the filter runs a regex per game.
+// Games with a real win32 executable (no noExe games), like the original Variety script's catalog filter.
+// Cached per catalog array.
 const poolCache = new WeakMap();
 export function randomPool(games) {
     let pool = poolCache.get(games);
-    if (!pool) poolCache.set(games, (pool = games.filter(game => game.exe !== slugExe(game.name))));
+    if (!pool) poolCache.set(games, (pool = games.filter(game => !game.noExe)));
     return pool;
 }
 

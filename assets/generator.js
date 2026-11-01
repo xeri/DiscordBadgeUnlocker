@@ -4,7 +4,7 @@
 import {
     BADGE_TIERS, ORIGINAL_MAX, VIBES, assignHours, catalogIndex, countByVibe, fitTier, formatCount, formatHours, hoursSince,
     minHours, normalizeSelection, parseRanking, pickFromRanking, pickRandom, resolveSelection, roundHours, scaleTo,
-    searchCatalog, sendGames, sendHours, slugExe, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable
+    searchCatalog, sendGames, sendHours, splitEvenly, sumHours, summarize, tierAim, tierFor, toTenths, validateTable
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import { DEFAULT_OPTIONS, OUTPUTS, loadTemplates, normalizeOptions, renderScripts } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 
@@ -26,7 +26,12 @@ const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 const hrs = h => formatHours(h).replace(/\.0$/, ""); // "1,000", not "1,000.0"
 const addHours = (a, b) => (toTenths(a) + toTenths(b)) / 10;
 const plural = (n, word) => `${formatCount(n)} ${word}${n === 1 ? "" : "s"}`;
-const listNames = (names, max = 3) => names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
+// "A", "A and B", "A, B and C", "A, B, C and 4 more"
+const listNames = (names, max = 3) => {
+    const shown = names.length <= max ? names.slice(0, -1) : names.slice(0, max);
+    const last = names.length <= max ? names.at(-1) : `${names.length - max} more`;
+    return shown.length ? `${shown.join(", ")} and ${last}` : last ?? "";
+};
 const normalizeHave = have => ({ games: Math.floor(pos(have?.games)), hours: roundHours(pos(have?.hours)) });
 
 // Hover hints (assets/tips.js reads data-tip). Short ones live inline in the markup below.
@@ -34,8 +39,12 @@ const TIP = {
     since: "Caps the hours at the time since this day (00:00 UTC). The scripts warn if a session would start before it. Leave empty to skip.",
     variety: "The original-style engine. While it claims, it also shows each game as your activity. Run only one of the three scripts.",
     gameTime: "The main script's engine under the original window.__gameTimePresence.boost() name. Run only one of the three scripts.",
-    main: "Both badges in one run. Paste it in Discord's console (Ctrl+Shift+I)."
+    main: "Both badges in one run. Paste it in Discord's console (Ctrl+Shift+I).",
+    untested: "Discord's catalog lists no Windows executable for these games, so the scripts send a made-up “name.exe” with them. " +
+        "The original Game Time script sent games like these; the original Variety script left them out. " +
+        "Nobody has confirmed whether Discord counts them. To be safe, swap them for other games or add a few spare."
 };
+const INFO_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><circle cx="12" cy="7.6" r="1.25" fill="currentColor" stroke="none"/></svg>`;
 const FILE = Object.fromEntries(OUTPUTS.map(o => [o.key, o.file]));
 
 // Script options in Advanced: [option path, label, hint, min, max]; no min/max means an on/off switch.
@@ -255,13 +264,13 @@ const markup = catalogSize => `
 function build(root, catalog, templates) {
     const state = loadState();
     const { byId, search: index } = catalogIndex(catalog.games);
-    // Games Discord lists without a Windows executable get a made-up "<name>.exe"; the original Variety script skipped them.
-    const noExe = id => { const g = byId.get(id); return !!g && g.exe === slugExe(g.name); };
+    // Games Discord lists without any executable get a made-up "<name>.exe": untested for the badges (see TIP.untested).
+    const untested = id => byId.get(id)?.noExe === true;
     let ranking = null;
     let scoreById = new Map();
     let minScore = 1;
     let latest = null;
-    let cautions = 0; // Custom warnings that make Copy/Download ask twice
+    let cautions = 0; // Custom warnings that could cost a tier: they make Copy/Download ask twice
 
     root.innerHTML = markup(catalog.games.length);
 
@@ -522,7 +531,8 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         }
     }
 
-    // Custom lists get extra care: warn where a skipped game or a missing executable could cost a tier.
+    // Custom lists get extra care: warn where a skipped game could cost a tier, and flag untested games.
+    // [{ text, info?, confirm }]: `info` adds an (i) hint; `confirm` makes Copy/Download ask twice.
     function customCautions(table, summary) {
         const out = [];
         const have = state.have;
@@ -532,20 +542,25 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
             const at = tierFor(badge, values[badge]);
             if (at < 0 || values[badge] >= tierAim(badge, at)) continue;
             const below = at > 0 ? tiers[at - 1].name : "no badge";
-            out.push(badge === "variety"
-                ? `${formatCount(values.variety)} games${have.games ? " in all" : ""} is only just ${tiers[at].name}. If Discord skips one, you get ${below}. Add ${tierAim("variety", at) - values.variety} more for some spare.`
-                : `${hrs(values.time)}h${have.hours ? " in all" : ""} is only just ${tiers[at].name}. If Discord skips a game, you could get ${below}. Aim for ${hrs(tierAim("time", at))}h in all.`);
+            out.push({
+                confirm: true,
+                text: badge === "variety"
+                    ? `${formatCount(values.variety)} games${have.games ? " in all" : ""} is only just ${tiers[at].name}. If Discord skips one, you get ${below}. Add ${tierAim("variety", at) - values.variety} more for some spare.`
+                    : `${hrs(values.time)}h${have.hours ? " in all" : ""} is only just ${tiers[at].name}. If Discord skips a game, you could get ${below}. Aim for ${hrs(tierAim("time", at))}h in all.`
+            });
         }
-        const risky = table.filter(row => noExe(row.id));
+        const risky = table.filter(row => untested(row.id));
         if (risky.length) {
             const sure = { variety: values.variety - risky.length, time: addHours(values.time, -sumHours(risky)) };
             const drops = BADGE_KEYS
                 .filter(badge => tierFor(badge, sure[badge]) < tierFor(badge, values[badge]))
                 .map(badge => { const at = tierFor(badge, sure[badge]); return `${BADGES[badge].short} drops to ${at >= 0 ? BADGE_TIERS[badge][at].name : "no badge"}`; });
-            if (drops.length) {
-                out.push(`${formatCount(risky.length)} of your games have no Windows executable in Discord's catalog: ${listNames(risky.map(r => r.name))}. ` +
-                    `The original Variety script skipped games like these. If Discord does too, ${drops.join(" and ")}.`);
-            }
+            out.push({
+                confirm: drops.length > 0,
+                info: TIP.untested,
+                text: `${plural(risky.length, "game")} ${risky.length === 1 ? "is" : "are"} untested: Discord lists no Windows executable for ` +
+                    `${listNames(risky.map(r => r.name))}.${drops.length ? ` If it doesn't count them, ${drops.join(" and ")}.` : ""}`
+            });
         }
         return out;
     }
@@ -592,8 +607,8 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
 
         const summary = summarize(table);
         const care = custom && table.length ? customCautions(table, summary) : [];
-        for (const text of care) notes.push({ level: "warn", text });
-        cautions = care.length;
+        for (const { text, info } of care) notes.push({ level: "warn", text, info });
+        cautions = care.filter(c => c.confirm).length;
         if (custom && table.length && state.have.games) {
             notes.push({ level: "info", text: "Game Variety only counts games you haven't played before. Any game here you've already played won't add to it, though its hours still count for Game Time." });
         }
@@ -601,7 +616,8 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
         ref.sumGames.textContent = formatCount(summary.games);
         ref.sumHours.textContent = formatHours(summary.totalHours);
         renderPills(summary);
-        ref.notes.innerHTML = notes.map(n => `<li class="${n.level}">${esc(n.text)}</li>`).join("");
+        ref.notes.innerHTML = notes.map(n => `<li class="${n.level}">${esc(n.text)}${n.info
+            ? ` <button type="button" class="info-btn" data-tip="${esc(n.info)}" data-tip-click aria-label="Why?">${INFO_ICON}</button>` : ""}</li>`).join("");
 
         latest = null;
         if (table.length && check.ok && !notes.some(n => n.level === "error")) {
@@ -783,6 +799,7 @@ ${manual ? `<input class="hrs" type="number" min="0.1" step="0.1" value="${esc(g
     // ---------- events ----------
 
     root.addEventListener("click", async event => {
+        if (event.target.closest(".info-btn")) return; // only shows its hint (tips.js); keeps an armed button armed
         const target = event.target.closest("button, [data-add]");
         if (armed && target !== armed.el) disarm();
         if (!target || !root.contains(target)) {
