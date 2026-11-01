@@ -19,10 +19,14 @@ Builds console scripts that unlock Discord's **Game Variety** (100+ games) and *
 
 ## Requirements
 
-- Node.js 18+
 - Discord desktop app
+- Node.js 18+, only to run the page locally or use the agent skill
 
 ## Getting started
+
+Open **<https://xeri.github.io/DiscordBadgeUnlocker/>** and click **Load generator**.
+
+To run it locally instead:
 
 ```bash
 git clone https://github.com/xeri/DiscordBadgeUnlocker.git
