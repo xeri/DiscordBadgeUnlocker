@@ -82,7 +82,7 @@ const ADJUST = [
     { id: "700136079562375258", name: "VALORANT", estimate: 330, basis: "Newzoo #9 PC by MAU (2025); Twitch top 5; 14–35M monthly players",
         tags: ["FPS", "Shooter", "Tactical Shooter", "Hero Shooter", "Competitive", "Free to Play", "Multiplayer", "Team-Based"] },
     { id: "1402418703554842694", name: "Fortnite", estimate: 300, basis: "Newzoo #5 PC by MAU (2025); 0.6–1.4M concurrent, all platforms",
-        tags: ["Battle Royale", "Shooter", "Third-Person Shooter", "Building", "Multiplayer", "Free to Play", "Cartoony", "Colorful"] },
+        tags: ["Battle Royale", "Shooter", "Third-Person Shooter", "Competitive", "Multiplayer", "Free to Play", "PvP", "Colorful"] },
     { id: "762434991303950386", name: "Genshin Impact", estimate: 110, basis: "MMO-Population: 8.2M daily players, all platforms",
         tags: ["Anime", "Open World", "Action RPG", "RPG", "Gacha", "Cute", "Free to Play", "Adventure", "Fantasy"] },
     { id: "1544195652903247973", name: "Teamfight Tactics", estimate: 70, basis: "League client mode; Twitch top 30",

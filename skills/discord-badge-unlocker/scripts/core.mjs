@@ -380,7 +380,7 @@ export const VIBES = Object.freeze([
         tags: ["Competitive", "eSports", "PvP", "MOBA", "Battle Royale", "Tactical Shooter", "Hero Shooter", "Extraction Shooter", "Fighting", "Auto Battler"] },
     { key: "cozy", label: "Cozy & cute", blurb: "Anime, gacha, cute and cozy games, colorful indies",
         tags: ["Cute", "Anime", "Cozy", "Wholesome", "Cartoony", "Gacha", "Colorful", "Hand-drawn", "Pixel Graphics"],
-        not: ["Horror", "Gore", "Psychological Horror"] },
+        not: ["Horror", "Gore", "Psychological Horror", "FPS", "Shooter", "Third-Person Shooter", "Hero Shooter", "Looter Shooter", "Arena Shooter"] },
     { key: "adventurer", label: "Adventurer", blurb: "RPGs, open worlds, MMOs, story games",
         tags: ["RPG", "Action RPG", "JRPG", "CRPG", "MMORPG", "Open World", "Story Rich", "Souls-like"] },
     { key: "builder", label: "Builder", blurb: "Strategy, sims, sandbox and survival-crafting",
