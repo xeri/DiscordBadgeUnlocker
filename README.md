@@ -5,6 +5,8 @@
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
 <img alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" width="50%" height="50%"/>
 
+Why have custom games instead of random? Discord could use this game data for new features and personalisation in the future.
+
 > [!WARNING]
 > **Educational & Research Use Only:** Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](DISCLAIMER.md).
 
@@ -44,6 +46,7 @@ Open <http://127.0.0.1:8080/> and click **Load generator**.
 - Only the Discord desktop app counts, not the web version. (Vesktop does not work, it's web)
 - Progress only counts with **Use data to personalize my Discord experience** turned on.
 - Game Time counts time played on or after **8 December 2025**. A session longer than the time since then starts before it.
+- Badges usually appear after 1D 7H (31 hours). Range is 24-48hrs.
 
 ## Agent skill
 
