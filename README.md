@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
-<img width="803" height="629" alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" />
+<img width="803" height="629" alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" width="50%" height="50%"/>
 
 > [!WARNING]
 > **Educational & Research Use Only:** Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](DISCLAIMER.md).
