@@ -99,6 +99,7 @@ It runs all three scripts in a mocked Discord client and checks the following:
 - the files parse, with no `Math.random`, and the table is byte-identical across files and matches `table.json`
 - re-rendering gives identical bytes
 - each script sends every game exactly once, and the hours add up exactly
+- every session is 23h or less (Discord drops any session over 24h), and requests stay at `batchSize` games and `batchSize` × 3 events
 - every ordered pair of scripts sends nothing on the second run
 - another account in the same client still gets everything
 - `resetClaimed()` resends, and the Variety rotation stops after its claim

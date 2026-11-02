@@ -24,6 +24,47 @@
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const sumHours = games => games.reduce((total, game) => total + game.hours, 0);
 
+    // Discord drops a play session longer than 24h completely, so a longer game goes as back-to-back
+    // sessions of at most 23h, SESSION_GAP_MS apart, the last one ending when it's sent.
+    const MAX_SESSION_MS = 23 * 3600 * 1000;
+    const SESSION_GAP_MS = 10 * 60 * 1000;
+    const sessionCount = game => Math.max(1, Math.ceil(Math.round(game.hours * 3600 * 1000) / MAX_SESSION_MS));
+
+    // The game's sessions, oldest first, as { start, durationMs }. Durations add up to its hours exactly.
+    function splitSessions(game, end) {
+        const totalMs = Math.round(game.hours * 3600 * 1000);
+        const count = sessionCount(game);
+        const base = Math.floor(totalMs / count);
+        const sessions = [];
+        for (let k = 0; k < count; k++) {
+            const durationMs = base + (k < totalMs - base * count ? 1 : 0);
+            sessions.unshift({ start: end - durationMs, durationMs });
+            end -= durationMs + SESSION_GAP_MS;
+        }
+        return sessions;
+    }
+
+    // Up to CONFIG.batchSize games per request, and no more events than that many one-session games
+    // (3 each) unless a single game needs more. A game's sessions always share a request.
+    function makeBatches(games) {
+        const limit = CONFIG.batchSize * 3;
+        const batches = [];
+        let current = [];
+        let events = 0;
+        for (const game of games) {
+            const count = sessionCount(game) * 3;
+            if (current.length && (current.length >= CONFIG.batchSize || events + count > limit)) {
+                batches.push(current);
+                current = [];
+                events = 0;
+            }
+            current.push(game);
+            events += count;
+        }
+        if (current.length) batches.push(current);
+        return batches;
+    }
+
     function webpackRequire() {
         const requireFn = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
         webpackChunkdiscord_app.pop();
@@ -103,18 +144,13 @@
         return btoa(str);
     }
 
-    function sessionEvents(game, fingerprint, state) {
-        const durationMs = Math.round(game.hours * 3600 * 1000);
+    // One session: first heartbeat at `start`, launch_game and the final heartbeat at its end.
+    function sessionEvents(game, start, durationMs, fingerprint, state) {
         const sessionId = uuid();
-        const now = Date.now();
-        const start = Math.max(0, now - durationMs);
-        if (TRACK_START_MS !== null && start < TRACK_START_MS) {
-            console.warn(`${LABEL} ${game.name} would start before ${new Date(TRACK_START_MS).toISOString().slice(0, 10)} ` +
-                `(${new Date(start).toISOString()}).`);
-        }
+        const end = start + durationMs;
 
         const launch = {
-            client_track_timestamp: now,
+            client_track_timestamp: end,
             client_heartbeat_session_id: state.heartbeat,
             game: game.name,
             game_id: game.id,
@@ -149,10 +185,10 @@
             launch_signature: state.signature,
             client_rtc_state: null,
             client_app_state: "focused",
-            client_send_timestamp: now
+            client_send_timestamp: end
         };
 
-        // The first heartbeat opens the session at `start`, the final one closes it now with the full duration.
+        // The first heartbeat opens the session at `start`, the final one closes it at `end` with the full duration.
         const heartbeat = (timestamp, final) => ({
             type: "running_game_heartbeat",
             properties: {
@@ -174,12 +210,23 @@
                 client_send_timestamp: timestamp
             }
         });
-        const events = [heartbeat(start, false), { type: "launch_game", properties: launch }, heartbeat(now, true)];
+        const events = [heartbeat(start, false), { type: "launch_game", properties: launch }, heartbeat(end, true)];
 
         for (const event of events) {
             event.properties.event_sequence_number = ++state.sequence;
         }
-        return { events, hours: durationMs / 3600000 };
+        return events;
+    }
+
+    // Every session of one game, the last ending now.
+    function gameEvents(game, fingerprint, state) {
+        const sessions = splitSessions(game, Date.now());
+        if (TRACK_START_MS !== null && sessions[0].start < TRACK_START_MS) {
+            console.warn(`${LABEL} ${game.name} would start before ${new Date(TRACK_START_MS).toISOString().slice(0, 10)} ` +
+                `(${new Date(sessions[0].start).toISOString()}).`);
+        }
+        const events = sessions.flatMap(session => sessionEvents(game, session.start, session.durationMs, fingerprint, state));
+        return { events, hours: sessions.reduce((total, session) => total + session.durationMs, 0) / 3600000 };
     }
 
     async function getAuthContext(client) {
@@ -297,8 +344,11 @@
             return 0;
         }
 
+        const batches = makeBatches(selected);
+        const sessions = selected.reduce((total, game) => total + sessionCount(game), 0);
         console.log(`${LABEL} Connected as ${context.username} | sending ${sumHours(selected).toFixed(1)}h ` +
-            `across ${selected.length} games (table: ${GAMES.length} games, ${TOTAL_HOURS}h)`);
+            `across ${selected.length} games as ${sessions} sessions of at most 23h, in ${batches.length} requests ` +
+            `(table: ${GAMES.length} games, ${TOTAL_HOURS}h)`);
         if (CONFIG.dryRun) {
             console.warn(`${LABEL} Dry-run mode is ON: nothing will be sent.`);
         } else {
@@ -321,21 +371,21 @@
 
         let sentGames = 0;
         let sentHours = 0;
-        const totalBatches = Math.ceil(selected.length / CONFIG.batchSize);
+        const totalBatches = batches.length;
 
-        for (let offset = 0; offset < selected.length; offset += CONFIG.batchSize) {
+        for (let b = 0; b < batches.length; b++) {
             if (stopped) break;
-            const chunk = selected.slice(offset, offset + CONFIG.batchSize);
+            const chunk = batches[b];
             const allEvents = [];
             let chunkHours = 0;
 
             for (const game of chunk) {
-                const result = sessionEvents(game, context.fingerprint, state);
+                const result = gameEvents(game, context.fingerprint, state);
                 allEvents.push(...result.events);
                 chunkHours += result.hours;
             }
 
-            const batchNum = Math.floor(offset / CONFIG.batchSize) + 1;
+            const batchNum = b + 1;
             const accepted = await sendBatch(allEvents, context);
 
             if (accepted) {
@@ -352,7 +402,7 @@
                 console.warn(`${LABEL} Batch ${batchNum}/${totalBatches} was rejected.`);
             }
 
-            if (offset + CONFIG.batchSize < selected.length && !stopped) {
+            if (b + 1 < batches.length && !stopped) {
                 await wait(CONFIG.delayMs);
             }
         }

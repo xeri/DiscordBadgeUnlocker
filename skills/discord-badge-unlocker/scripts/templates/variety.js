@@ -8,6 +8,10 @@
     const STAGGER_MINUTES = 25;
     const LAUNCH_OFFSET_MS = 300;          // gap between the first heartbeat and launch_game
     const FAKE_PID = 50000;
+    // Discord drops a play session longer than 24h completely, so a longer game goes as back-to-back
+    // sessions of at most 23h, SESSION_GAP_MS apart.
+    const MAX_SESSION_MS = 23 * 3600 * 1000;
+    const SESSION_GAP_MS = 10 * 60 * 1000;
 
     const CLIENT_VERSION = "1.0.9253";
     const CLIENT_BUILD_NUMBER = 594031;
@@ -27,6 +31,44 @@
     const uuid = () => crypto.randomUUID();
     const isLinux = /Linux/i.test(navigator.userAgent);
     const basename = value => String(value ?? "").split(/[\\/]/).pop();
+    const sessionCount = game => Math.max(1, Math.ceil(Math.round(game.hours * 3600 * 1000) / MAX_SESSION_MS));
+
+    // The game's sessions, oldest first, as { start, durationMs }, the last ending at `end`.
+    // Durations add up to its hours exactly.
+    function splitSessions(game, end) {
+        const totalMs = Math.round(game.hours * 3600 * 1000);
+        const count = sessionCount(game);
+        const base = Math.floor(totalMs / count);
+        const sessions = [];
+        for (let k = 0; k < count; k++) {
+            const durationMs = base + (k < totalMs - base * count ? 1 : 0);
+            sessions.unshift({ start: end - durationMs, durationMs });
+            end -= durationMs + SESSION_GAP_MS;
+        }
+        return sessions;
+    }
+
+    // Up to batchSize games per request, and no more events than that many one-session games (3 each)
+    // unless a single game needs more. A game's sessions always share a request.
+    function makeBatches(games, batchSize) {
+        const limit = batchSize * 3;
+        const batches = [];
+        let current = [];
+        let events = 0;
+        for (const game of games) {
+            const count = sessionCount(game) * 3;
+            if (current.length && (current.length >= batchSize || events + count > limit)) {
+                batches.push(current);
+                current = [];
+                events = 0;
+            }
+            current.push(game);
+            events += count;
+        }
+        if (current.length) batches.push(current);
+        return batches;
+    }
+
     const toBase64 = bytes => {
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -255,16 +297,10 @@
         let seq = 0;
         const nextSeq = () => ++seq;
 
-        const buildSessionEvents = (game, fingerprint, gameIndex = 0) => {
-            const durationMs = Math.round(game.hours * 3600 * 1000);
+        // One session: first heartbeat at `start`, launch_game just after, final heartbeat at its end.
+        const buildSessionEvents = (game, start, durationMs, fingerprint) => {
             const sessionId = uuid();
-            const offsetMs = gameIndex * (STAGGER_MINUTES * 60 * 1000);
-            const now = Date.now() - offsetMs;
-            const start = Math.max(0, now - durationMs);
-            if (TRACK_START_MS !== null && start < TRACK_START_MS) {
-                console.warn(`${LABEL} ${game.name} would start before ${new Date(TRACK_START_MS).toISOString().slice(0, 10)} ` +
-                    `(${new Date(start).toISOString()}).`);
-            }
+            const end = start + durationMs;
 
             const launchProps = {
                 client_track_timestamp: start + LAUNCH_OFFSET_MS,
@@ -306,7 +342,7 @@
                 client_send_timestamp: start + LAUNCH_OFFSET_MS
             };
 
-            // The first heartbeat opens the session at `start`, the final one closes it at `now` with the full
+            // The first heartbeat opens the session at `start`, the final one closes it at `end` with the full
             // duration. Sequence numbers follow creation order: launch_game, then the two heartbeats.
             const heartbeat = (timestamp, final) => ({
                 type: "running_game_heartbeat",
@@ -330,7 +366,17 @@
                     client_send_timestamp: timestamp
                 }
             });
-            return [heartbeat(start, false), { type: "launch_game", properties: launchProps }, heartbeat(now, true)];
+            return [heartbeat(start, false), { type: "launch_game", properties: launchProps }, heartbeat(end, true)];
+        };
+
+        // Every session of one game. The n-th game's last session ends n × STAGGER_MINUTES before now.
+        const buildGameEvents = (game, fingerprint, gameIndex = 0) => {
+            const sessions = splitSessions(game, Date.now() - gameIndex * (STAGGER_MINUTES * 60 * 1000));
+            if (TRACK_START_MS !== null && sessions[0].start < TRACK_START_MS) {
+                console.warn(`${LABEL} ${game.name} would start before ${new Date(TRACK_START_MS).toISOString().slice(0, 10)} ` +
+                    `(${new Date(sessions[0].start).toISOString()}).`);
+            }
+            return sessions.flatMap(session => buildSessionEvents(game, session.start, session.durationMs, fingerprint));
         };
 
         async function postScienceEvents(events, currentAuth, retry = 0) {
@@ -528,20 +574,26 @@
                     }
                     if (stopped) return 0;
                 }
+                const batches = makeBatches(targetGames, batchSize);
+                const sessions = targetGames.reduce((total, game) => total + sessionCount(game), 0);
                 console.log(`${LABEL} Claiming ${targetGames.length} games ` +
-                    `(${sumHours(targetGames).toFixed(1)}h, fixed hours per game, ${batchSize}/batch, ${delayMs}ms delay)...`);
+                    `(${sumHours(targetGames).toFixed(1)}h as ${sessions} sessions of at most 23h, fixed hours per game, ` +
+                    `${batches.length} requests of up to ${batchSize} games, ${delayMs}ms delay)...`);
                 if (CONFIG.dryRun) console.warn(`${LABEL} Dry-run mode is ON: nothing will be sent.`);
 
                 let claimed = 0;
                 let claimedHours = 0;
-                for (let i = 0; i < targetGames.length; i += batchSize) {
+                let offset = 0;
+                for (let b = 0; b < batches.length; b++) {
                     if (stopped) {
                         console.warn(`${LABEL} Claim stopped.`);
                         break;
                     }
-                    const chunk = targetGames.slice(i, i + batchSize);
+                    const chunk = batches[b];
+                    const i = offset;
+                    offset += chunk.length;
                     const events = chunk.flatMap((game, idx) =>
-                        buildSessionEvents(game, currentAuth.fingerprint, i + idx)
+                        buildGameEvents(game, currentAuth.fingerprint, i + idx)
                     );
                     let ok = false;
                     try {
@@ -561,7 +613,7 @@
                     } else {
                         console.warn(`${LABEL} Batch starting at index ${i} failed.`);
                     }
-                    if (i + batchSize < targetGames.length && !stopped) {
+                    if (b + 1 < batches.length && !stopped) {
                         await wait(delayMs);
                     }
                 }

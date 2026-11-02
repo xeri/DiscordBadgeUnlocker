@@ -47,7 +47,8 @@ const TIP = {
     // After Copy or Download. Both requirements are from Discord's help article on the badges.
     run: "into the console of the Discord desktop app (Ctrl+Shift+I). Discord in a browser won't work, and nothing counts " +
         "unless “Use data to personalize my Discord experience” is on.",
-    hours: "Each game's hours go out as one play session that ends when the script runs. Game Time only counts time played on " +
+    hours: "Discord drops any play session over 24h, so each game's hours go out as back-to-back sessions of at most 23h, " +
+        "the last ending when the script runs. Game Time only counts time played on " +
         "or after 8 December 2025, and it tops out at 5,000h (Eternal). Badges take about 1–2 days to update.",
     dUntested: "On: every game Discord lists, including the ones it lists no Windows executable for. " +
         "Off: only games with a real Windows executable, like the original Variety script.",
@@ -556,7 +557,7 @@ function build(root, catalog, templates) {
         }
         setValue(ref.dTrack, state.trackStart ?? "");
         ref.facts.innerHTML = [
-            `Game Time only counts time played on or after 8 December 2025: at most ${hrs(countable)}h for one session today.`,
+            `Game Time only counts time played on or after 8 December 2025: at most ${hrs(countable)}h for one game today.`,
             "Only the Discord desktop app counts, and only with “Use data to personalize my Discord experience” on."
         ].map(text => `<li>${esc(text)}</li>`).join("") +
             `<li class="source">Source: <a href="${HELP_URL}" target="_blank" rel="noopener noreferrer">Discord's help article on profile badges</a></li>`;

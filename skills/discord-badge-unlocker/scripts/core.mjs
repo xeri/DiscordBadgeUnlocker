@@ -433,7 +433,7 @@ export function validateTable(table, { trackStart = null, now = Date.now() } = {
     const early = table.filter(row => row.hours > countable);
     if (early.length) {
         warnings.push({ kind: "since", text: `${formatCount(early.length)} games have more than the ${formatHours(Math.floor(countable * 10) / 10)}h since ` +
-            `${GAME_TIME_SINCE}; Game Time only counts time played on or after that day, and a longer session starts before it.` });
+            `${GAME_TIME_SINCE}; Game Time only counts time played on or after that day, and a game with more hours starts before it.` });
     }
     if (trackStart) {
         const available = hoursSince(trackStart, now);

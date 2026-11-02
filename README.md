@@ -47,6 +47,7 @@ Open <http://127.0.0.1:8080/> and click **Load generator**.
 - Progress only counts with **Use data to personalize my Discord experience** turned on.
 - Game Time counts time played on or after **8 December 2025**. A session longer than the time since then starts before it.
 - Badges usually appear after 1D 7H (31 hours). Range is 24-48hrs.
+- Play sessions over 24h don't count at all, so the scripts split each game into back-to-back sessions of at most 23h.
 
 ## Agent skill
 

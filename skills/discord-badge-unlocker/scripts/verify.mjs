@@ -32,6 +32,10 @@ for (const output of OUTPUTS) {
 const KEYS = OUTPUTS.map(output => output.key);
 const ids = table.games.map(game => game.id);
 const expectedMs = Math.round(table.totalHours * 10) * 360000;
+// Discord drops a session over 24h, so the scripts split games into sessions of at most 23h.
+const MAX_SESSION_MS = 23 * 3600 * 1000;
+const expectedSessions = table.games.reduce((total, game) =>
+    total + Math.max(1, Math.ceil(Math.round(game.hours * 3600 * 1000) / MAX_SESSION_MS)), 0);
 const dryRun = table.options?.dryRun === true;
 const keepRotating = table.options?.variety?.keepRotating === true;
 
@@ -256,21 +260,65 @@ function finals(events) {
     return events.filter(e => e.type === "running_game_heartbeat" && e.properties.final_heartbeat);
 }
 
+// Games with at least one session in `events`.
+const gamesIn = events => new Set(finals(events).map(e => e.properties.game_id)).size;
+
 function checkFullSend(name, events) {
     const done = finals(events);
-    const sentIds = done.map(e => e.properties.game_id);
+    const byGame = new Map();
+    for (const e of done) byGame.set(e.properties.game_id, [...(byGame.get(e.properties.game_id) ?? []), e]);
     const sumMs = done.reduce((total, e) => total + e.properties.duration_tracked_ms, 0);
-    const unique = new Set(sentIds);
-    const sameSet = unique.size === ids.length && sentIds.length === ids.length && ids.every(id => unique.has(id));
-    const perGame = table.games.every(game => {
-        const event = done.find(e => e.properties.game_id === game.id);
-        return event && event.properties.duration_tracked_ms === Math.round(game.hours * 3600 * 1000);
-    });
+    const sameSet = byGame.size === ids.length && ids.every(id => byGame.has(id));
+    const perGame = table.games.every(game =>
+        (byGame.get(game.id) ?? []).reduce((total, e) => total + e.properties.duration_tracked_ms, 0) ===
+            Math.round(game.hours * 3600 * 1000));
     const launches = events.filter(e => e.type === "launch_game").length;
-    check(sameSet && perGame && sumMs === expectedMs && launches === ids.length && events.length === ids.length * 3,
+    check(sameSet && perGame && sumMs === expectedMs && launches === done.length && events.length === done.length * 3,
         `${name}: sends every game once with its hours`,
-        `${sentIds.length} games, ${(sumMs / 3600000).toFixed(1)}h, ${events.length} events`);
+        `${byGame.size} games, ${(sumMs / 3600000).toFixed(1)}h, ${done.length} sessions, ${events.length} events`);
+
+    // Each session: an initial heartbeat, then a final one its duration later, 23h at most.
+    // A game's sessions follow one another without overlapping.
+    const initials = new Map(events
+        .filter(e => e.type === "running_game_heartbeat" && e.properties.initial_heartbeat)
+        .map(e => [e.properties.game_session_id, e]));
+    const whole = initials.size === done.length && done.every(e => {
+        const first = initials.get(e.properties.game_session_id);
+        const ms = e.properties.duration_tracked_ms;
+        return first && first.properties.game_id === e.properties.game_id && ms > 0 && ms <= MAX_SESSION_MS &&
+            e.properties.client_track_timestamp - first.properties.client_track_timestamp === ms;
+    });
+    const apart = [...byGame.values()].every(list => {
+        const spans = list.map(e => [e.properties.client_track_timestamp - e.properties.duration_tracked_ms, e.properties.client_track_timestamp])
+            .sort((a, b) => a[0] - b[0]);
+        return spans.every((span, i) => i === 0 || span[0] > spans[i - 1][1]);
+    });
+    const longest = Math.max(...done.map(e => e.properties.duration_tracked_ms));
+    check(whole && apart && done.length === expectedSessions,
+        `${name}: every session is 23h or less, a game's sessions don't overlap`,
+        `${done.length}/${expectedSessions} sessions, longest ${(longest / 3600000).toFixed(2)}h`);
     return { sumMs, done };
+}
+
+// Requests stay as big as before the split: batchSize games and batchSize × 3 events, unless one game
+// needs more on its own. A game's sessions all go in the same request.
+function checkRequests(script, posts) {
+    const size = script.engine === "variety" ? table.options?.variety?.batchSize : table.options?.batchSize;
+    const where = new Map();
+    let together = true;
+    posts.forEach((post, i) => {
+        for (const id of new Set(finals(post.events).map(e => e.properties.game_id))) {
+            if (where.has(id)) together = false;
+            where.set(id, i);
+        }
+    });
+    const sized = posts.every(post => {
+        const games = gamesIn(post.events);
+        return games <= size && (post.events.length <= size * 3 || games === 1);
+    });
+    check(Number.isInteger(size) && sized && together,
+        `${script.file}: requests hold at most ${size} games and ${size * 3} events, a game's sessions in one`,
+        `${posts.length} requests, largest ${Math.max(...posts.map(post => post.events.length))} events`);
 }
 
 const VERBOSE_LOGS = [];
@@ -292,14 +340,15 @@ if (dryRun) {
             const a = await discord.run(first);
             if (second === first) {
                 const { done } = checkFullSend(scripts[first].file, a);
+                checkRequests(scripts[first], discord.posts);
                 if (table.trackStart) {
                     const startMs = Date.parse(`${table.trackStart}T00:00:00Z`);
                     const early = done.filter(e => e.properties.client_track_timestamp - e.properties.duration_tracked_ms < startMs).length;
                     if (early) warn(`${scripts[first].file}: ${early} sessions start before ${table.trackStart}`);
                     else pass(`${scripts[first].file}: every session starts after ${table.trackStart}`);
                 }
-            } else if (finals(a).length !== ids.length) {
-                fail(`${scripts[first].file} → ${scripts[second].file}: first run sent everything`, `${finals(a).length} games`);
+            } else if (gamesIn(a) !== ids.length) {
+                fail(`${scripts[first].file} → ${scripts[second].file}: first run sent everything`, `${gamesIn(a)} games`);
             }
             if (first === "variety" && second === first) {
                 const instance = discord.sandbox.__multiGamePresence;
@@ -315,7 +364,7 @@ if (dryRun) {
             }
             const b = await discord.run(second);
             check(b.length === 0, `${scripts[first].file} then ${scripts[second].file}: second run sends nothing`,
-                b.length ? `${finals(b).length} games re-sent` : "");
+                b.length ? `${gamesIn(b)} games re-sent` : "");
             if (verbose) VERBOSE_LOGS.push([`${first}+${second}`, discord.logs]);
         }
     }
@@ -326,7 +375,7 @@ if (dryRun) {
         await discord.run("main");
         discord.env.userId = "222222222222222222";
         const other = await discord.run("variety");
-        check(finals(other).length === ids.length, "Another account in the same client still gets every game");
+        check(gamesIn(other) === ids.length, "Another account in the same client still gets every game");
         const again = await discord.run("gameTime");
         check(again.length === 0, "…and its history is kept separately");
     }
@@ -336,8 +385,8 @@ if (dryRun) {
         const legacy = new Map([["__badgePresenceFixed150_claimed_ids", JSON.stringify(ids.slice(0, 3))]]);
         const discord = createDiscord({ storage: legacy });
         const events = await discord.run("main");
-        check(finals(events).length === ids.length - Math.min(3, ids.length), "Legacy fixed-list history is respected",
-            `${finals(events).length}/${ids.length} sent`);
+        check(gamesIn(events) === ids.length - Math.min(3, ids.length), "Legacy fixed-list history is respected",
+            `${gamesIn(events)}/${ids.length} sent`);
     }
 
     // The Rich Presence uses the real Dispatcher, not Discord's translation Proxy.
@@ -354,7 +403,7 @@ if (dryRun) {
         const discord = createDiscord({ hideHttpUtils: true });
         await discord.run("main");
         check(discord.posts.length > 0 && discord.posts.every(post => post.via === "http-client") &&
-            finals(discord.posts.flatMap(post => post.events)).length === ids.length,
+            gamesIn(discord.posts.flatMap(post => post.events)) === ids.length,
         "Main script finds Discord's HTTP client past the translation Proxy");
     }
 
@@ -371,12 +420,12 @@ if (dryRun) {
         await discord.run("main");
         const before = discord.posts.length;
         await discord.sandbox.__discordBadgeUnlocker.run({ force: true });
-        check(finals(discord.posts.slice(before).flatMap(post => post.events)).length === ids.length, "run({ force: true }) sends anyway");
+        check(gamesIn(discord.posts.slice(before).flatMap(post => post.events)) === ids.length, "run({ force: true }) sends anyway");
     }
     for (const key of KEYS) {
         const discord = createDiscord({ consent: "error" });
         const events = await discord.run(key);
-        check(finals(events).length === ids.length && discord.logs.some(line => /Couldn't read/.test(line)),
+        check(gamesIn(events) === ids.length && discord.logs.some(line => /Couldn't read/.test(line)),
             `${scripts[key].file}: setting unreadable: warns, still sends`);
     }
 
@@ -384,10 +433,11 @@ if (dryRun) {
     for (const key of KEYS) {
         const discord = createDiscord({ science: n => (n === 1 || n === 2 ? { status: 429, retryAfter: 1 } : n === 4 ? 0 : 204) });
         const events = await discord.run(key);
-        const { length } = finals(events);
-        const sessions = new Set(finals(events).map(e => e.properties.game_session_id)).size;
-        check(length === ids.length && sessions === ids.length && discord.logs.some(line => /Rate limited/.test(line)),
-            `${scripts[key].file}: retries 429s and lost requests, every game once`, `${length} games`);
+        const done = finals(events);
+        const sessions = new Set(done.map(e => e.properties.game_session_id)).size;
+        check(gamesIn(events) === ids.length && sessions === done.length && done.length === expectedSessions &&
+            discord.logs.some(line => /Rate limited/.test(line)),
+        `${scripts[key].file}: retries 429s and lost requests, every session once`, `${gamesIn(events)} games, ${done.length} sessions`);
     }
 
     // Discord hides window.localStorage: the history goes through a hidden iframe and survives a reload.
@@ -414,7 +464,7 @@ if (dryRun) {
         const before = discord.posts.length;
         await api.run();
         const events = discord.posts.slice(before).flatMap(post => post.events);
-        check(finals(events).length === ids.length, "resetClaimed() lets the next run resend everything");
+        check(gamesIn(events) === ids.length, "resetClaimed() lets the next run resend everything");
     }
 }
 

@@ -217,6 +217,8 @@ function renderHeader(output, table, trackStart, options) {
     lines.push("Only the desktop app counts, and only with Settings > \"Use data to personalize");
     lines.push("my Discord experience\" on; the script checks that setting before sending.");
     lines.push("Game Time counts time from 2025-12-08 on.");
+    lines.push("Discord drops any play session over 24h, so games over 23h go as back-to-back");
+    lines.push("sessions of at most 23h.");
     if (output.engine === "telemetry") {
         lines.push("Sends each game once, with its hours, through Discord's own HTTP client.");
         lines.push("It never reads your token. Games already sent to this account are skipped.");
