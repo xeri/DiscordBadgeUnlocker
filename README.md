@@ -5,7 +5,11 @@
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
 <img alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" width="50%" height="50%"/>
 
-Why have custom games instead of random? Discord could use this game data for new features and personalisation in the future.
+
+Why have custom games instead of random? Discord could use this game data for new features and personalisation in the future, 
+<img width="25%" height="25%" alt="image" src="https://github.com/user-attachments/assets/477c6c4c-87ac-4ebe-92cc-5bde2c79fe12" />
+for example, the "Suggested for you" for some widgets
+
 
 > [!WARNING]
 > **Educational & Research Use Only:** Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](DISCLAIMER.md).
