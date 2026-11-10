@@ -49,6 +49,9 @@ Open <http://127.0.0.1:8080/> and click **Load generator**.
 
 ## Streaming badge
 
+> [!NOTE]
+> **Untested as of 11/11/26.** No run of the Streaming script has been checked against a real badge yet.
+
 Open the generator and click the **green button** in the sidebar (on phones, **Open Streaming**). Set the hours, then choose:
 
 - **Turbo:** Auto claims 10h a minute while someone watches. Off claims one minute a minute.
@@ -60,7 +63,7 @@ Then:
 2. Have someone watch. An alt counts. Stream time only counts with a viewer.
 3. Paste `stream-time.js` into the console and stay live until it says Done.
 
-Turbo is untested, so start with a small target like 100h.
+Start with a small target like 100h.
 
 ## What's known about the badges
 
