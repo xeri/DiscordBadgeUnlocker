@@ -61,6 +61,16 @@ const blocks = Object.values(scripts).map(script => {
 check(blocks.every(Boolean) && blocks.every(block => block === blocks[0]),
     "Game table block is byte-identical in all three scripts");
 
+const CLIENT_START = "    // ===== Discord client";
+const CLIENT_END = "    // ===== End of Discord client =====";
+const clientBlocks = Object.values(scripts).map(script => {
+    const a = script.text.indexOf(CLIENT_START);
+    const b = script.text.indexOf(CLIENT_END);
+    return a >= 0 && b > a ? script.text.slice(a, b + CLIENT_END.length) : null;
+});
+check(clientBlocks.every(Boolean) && clientBlocks.every(block => block === clientBlocks[0]),
+    "Discord client block is byte-identical in all three scripts");
+
 if (blocks[0]) {
     const parsed = vm.runInNewContext(`${blocks[0]}\n;({ GAMES, TOTAL_HOURS, EXPECTED_COUNT, TRACK_START_MS })`, { window: {} });
     const same = parsed.GAMES.length === table.games.length && parsed.GAMES.every((game, i) => {
@@ -85,13 +95,18 @@ try {
 // consent: what /users/@me/consent says ("error" fails the request). science(n): the n-th /science
 // answer, a status or { status, retryAfter }; status 0 never answers. hideLocalStorage: Discord's
 // deleted window.localStorage (the scripts reach it through an iframe). hideHttpUtils: the HTTP client
-// can only be found among cached module exports.
+// can only be found among cached module exports. runtimes: "two" (a client mod's smaller webpack runtime
+// answers the chunk push first) or "vencord" (no chunk push, only Vencord's wreq and RestAPI).
 function createDiscord({
     userId = "111111111111111111", storage = null, consent = { personalization: true, usage: true },
-    science = () => 204, hideLocalStorage = false, hideHttpUtils = false
+    science = () => 204, hideLocalStorage = false, hideHttpUtils = false, runtimes = "one"
 } = {}) {
     const env = { userId, username: "tester" };
     let scienceCalls = 0;
+    let meCalls = 0;
+    let tokenReads = 0;
+    let fetchCalls = 0;
+    const attempts = []; // every /science body, accepted or not
     const frames = { created: 0, removed: 0 };
     const posts = [];
     const logs = [];
@@ -146,7 +161,10 @@ function createDiscord({
     // Discord's own client rejects anything that isn't 2xx.
     const httpClient = {
         async get({ url }) {
-            if (url === "/users/@me") return reply(200, { id: env.userId, username: env.username, analytics_token: "analytics-token" });
+            if (url === "/users/@me") {
+                meCalls += 1;
+                return reply(200, { id: env.userId, username: env.username, analytics_token: `analytics-token-${meCalls}` });
+            }
             if (url === "/users/@me/consent") {
                 if (consent === "error") throw Object.assign(new Error("HTTP 500"), { status: 500 });
                 return reply(200, consentBody());
@@ -155,6 +173,7 @@ function createDiscord({
         },
         async post({ url, body }) {
             if (url !== "/science") return reply(404, null);
+            attempts.push({ token: body.token, events: body.events });
             const { status, retryAfter } = scienceAnswer();
             if (status === 0) throw new Error("socket hang up");
             if (status >= 300) throw Object.assign(new Error(`HTTP ${status}`), { status, body: retryAfter ? { retry_after: retryAfter } : {} });
@@ -171,7 +190,7 @@ function createDiscord({
         getVisibleGame: () => null
     };
     const original = { getRunningGames: runStore.getRunningGames, getGameForPID: runStore.getGameForPID };
-    const authStore = { getName: () => "AuthenticationStore", getToken: () => "mock-token", getId: () => env.userId };
+    const authStore = { getName: () => "AuthenticationStore", getToken: () => { tokenReads += 1; return "mock-token"; }, getId: () => env.userId };
     const userStore = { getName: () => "UserStore", getCurrentUser: () => ({ id: env.userId }) };
     const dispatcher = { _subscriptions: { RUNNING_GAMES_CHANGE: [] }, dispatch: action => dispatched.push(action.type), subscribe() {} };
 
@@ -184,6 +203,11 @@ function createDiscord({
             return () => "";
         }
     });
+
+    // Another webpack runtime with only a few modules, like a client mod's.
+    const smallRequire = () => undefined;
+    smallRequire.m = {};
+    smallRequire.c = { 0: { exports: { messages: i18n } } };
 
     const modules = { 7: { HTTP: httpClient } };
     const requireFn = id => modules[id];
@@ -220,10 +244,16 @@ function createDiscord({
         clearTimeout: clearTimeoutFake,
         addEventListener: () => {},
         webpackChunkdiscord_app: {
-            push: chunk => (typeof chunk[2] === "function" ? chunk[2](requireFn) : undefined),
+            push: chunk => {
+                if (typeof chunk[2] !== "function") return undefined;
+                if (runtimes === "two") chunk[2](smallRequire);
+                return chunk[2](requireFn);
+            },
             pop: () => {}
         },
+        // The scripts send everything through Discord's HTTP client; these answers only catch regressions.
         async fetch(url, init = {}) {
+            fetchCalls += 1;
             if (String(url).startsWith("/api/v9/users/@me/consent")) {
                 return consent === "error" ? reply(500, null) : reply(200, consentBody());
             }
@@ -239,6 +269,12 @@ function createDiscord({
         }
     };
     sandbox.window = sandbox;
+    if (runtimes === "vencord") {
+        delete sandbox.webpackChunkdiscord_app;
+        requireFn.m = {};
+        delete requireFn.c[7];
+        sandbox.Vencord = { Webpack: { wreq: requireFn, Common: { RestAPI: httpClient } } };
+    }
     const context = vm.createContext(sandbox);
 
     async function run(key) {
@@ -252,8 +288,9 @@ function createDiscord({
         return posts.slice(before).flatMap(post => post.events);
     }
 
-    return { env, sandbox, posts, logs, dispatched, store, run, runStore, original, pendingLong, frames,
-        get scienceCalls() { return scienceCalls; } };
+    return { env, sandbox, posts, attempts, logs, dispatched, store, run, runStore, original, pendingLong, frames,
+        get scienceCalls() { return scienceCalls; }, get meCalls() { return meCalls; },
+        get tokenReads() { return tokenReads; }, get fetchCalls() { return fetchCalls; } };
 }
 
 function finals(events) {
@@ -329,7 +366,8 @@ if (dryRun) {
     for (const key of KEYS) {
         const discord = createDiscord();
         const events = await discord.run(key);
-        check(events.length === 0 && discord.store.size === 0, `${scripts[key].file}: dry run sends nothing and saves nothing`);
+        check(events.length === 0 && discord.store.size === 0 && discord.fetchCalls === 0 && discord.tokenReads === 0,
+            `${scripts[key].file}: dry run sends nothing and saves nothing`);
         if (verbose) VERBOSE_LOGS.push([key, discord.logs]);
     }
 } else {
@@ -398,13 +436,63 @@ if (dryRun) {
         "multi-game-presence.js: presence goes to the real Dispatcher, not the translation Proxy");
     }
 
+    // Everything goes through Discord's own HTTP client: no fetch, and the token is never read.
+    for (const key of KEYS) {
+        const discord = createDiscord();
+        const events = await discord.run(key);
+        check(gamesIn(events) === ids.length && discord.posts.every(post => post.via === "http-client") &&
+            discord.fetchCalls === 0 && discord.tokenReads === 0,
+        `${scripts[key].file}: sends through Discord's HTTP client, never reads the token`);
+    }
+
     // The HTTP client is found among cached exports, past the translation Proxy.
-    {
+    for (const key of KEYS) {
         const discord = createDiscord({ hideHttpUtils: true });
-        await discord.run("main");
-        check(discord.posts.length > 0 && discord.posts.every(post => post.via === "http-client") &&
-            gamesIn(discord.posts.flatMap(post => post.events)) === ids.length,
-        "Main script finds Discord's HTTP client past the translation Proxy");
+        const events = await discord.run(key);
+        check(discord.posts.length > 0 && gamesIn(events) === ids.length,
+            `${scripts[key].file}: finds Discord's HTTP client past the translation Proxy`);
+    }
+
+    // Client mods: a smaller webpack runtime answers the chunk push first, or there's only Vencord.
+    for (const [runtimes, how] of [["two", "past a smaller webpack runtime"], ["vencord", "through Vencord's wreq and RestAPI"]]) {
+        for (const key of KEYS) {
+            const discord = createDiscord({ runtimes });
+            const events = await discord.run(key);
+            check(gamesIn(events) === ids.length, `${scripts[key].file}: finds Discord's modules ${how}`);
+        }
+    }
+
+    // A 401/403 gets one fresh analytics token and the same events again.
+    for (const key of KEYS) {
+        const discord = createDiscord({ science: n => (n === 0 ? 401 : 204) });
+        const events = await discord.run(key);
+        const done = finals(events);
+        const [first, second] = discord.attempts;
+        check(gamesIn(events) === ids.length && done.length === expectedSessions &&
+            new Set(done.map(e => e.properties.game_session_id)).size === done.length &&
+            !!first && !!second && first.token !== second.token && JSON.stringify(first.events) === JSON.stringify(second.events),
+        `${scripts[key].file}: after a 401, resends the same events with a fresh analytics token`);
+    }
+    // A second 401/403 drops only that batch, and it isn't marked as sent, so the next run sends it.
+    for (const key of KEYS) {
+        const discord = createDiscord({ science: n => (n < 2 ? 403 : 204) });
+        const a = new Set(finals(await discord.run(key)).map(e => e.properties.game_id));
+        discord.sandbox[scripts[key].ns]?.stop?.();
+        const b = new Set(finals(await discord.run(key)).map(e => e.properties.game_id));
+        check(a.size > 0 && a.size < ids.length && a.size + b.size === ids.length && [...b].every(id => !a.has(id)),
+            `${scripts[key].file}: a second 403 drops that batch only; the next run sends it`, `${a.size} + ${b.size} games`);
+    }
+    // The refresh never resends under another account.
+    {
+        let discord = null;
+        discord = createDiscord({ science: n => {
+            if (n === 0) discord.env.userId = "222222222222222222";
+            return n === 0 ? 401 : 204;
+        } });
+        const events = await discord.run("main");
+        check(gamesIn(events) < ids.length && discord.attempts.length > 0 &&
+            discord.logs.some(line => /account changed/.test(line)),
+        "After a 401, a batch isn't resent if the logged-in account changed");
     }
 
     // "Use data to personalize my Discord experience" off: nothing is sent or marked as sent.

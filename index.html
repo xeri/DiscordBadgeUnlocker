@@ -46,7 +46,7 @@
   </div>
 </dialog>
 <header class="titlebar" inert>
-  <div class="title" data-tip="Console scripts for Discord's Game Variety and Game Time badges"><span class="title-safe">Discord Badge Unlocker</span><span class="title-danger">DANGER ZONE</span></div>
+  <div class="title" data-tip="Console scripts for Discord's Game Variety, Game Time and Streaming badges"><span class="title-safe">Discord Badge Unlocker</span><span class="title-danger">DANGER ZONE</span><span class="title-stream">STREAMING</span></div>
   <div class="titlebar-end">
     <span id="catalog-status" class="status" data-state="loading" role="status" data-tip="Loading Discord's game catalog"><span class="dot" aria-hidden="true"></span><span class="text">Loading</span></span>
     <a class="icon-btn gh" href="https://github.com/xeri/DiscordBadgeUnlocker" target="_blank" rel="noopener noreferrer" data-tip="Source on GitHub" aria-label="GitHub repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg></a>
@@ -55,13 +55,21 @@
 <div class="shell" inert>
   <nav class="rail" aria-label="Zones">
     <div class="rail-item"><span class="rail-pill" aria-hidden="true"></span><button class="rail-btn" type="button" data-zone-switch="safe" aria-pressed="true" aria-label="Discord Badge Unlocker" data-tip="Discord Badge Unlocker" data-tip-side="right"><img src="assets/logo.svg" alt="" width="40" height="40" draggable="false"></button></div>
+    <div class="rail-item"><span class="rail-pill" aria-hidden="true"></span><button class="rail-btn rail-stream" type="button" data-zone-switch="stream" aria-pressed="false" aria-label="Streaming badge" data-tip="Streaming badge: stream time while you're live" data-tip-side="right"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/><path d="m10.5 8.2 4 2.3-4 2.3z" fill="currentColor"/></svg><span class="rail-new" aria-hidden="true">NEW</span></button></div>
     <div class="rail-sep" aria-hidden="true"></div>
     <div class="rail-item"><span class="rail-pill" aria-hidden="true"></span><button class="rail-btn" type="button" data-zone-switch="danger" aria-pressed="false" aria-label="Danger Zone" data-tip="Danger Zone: no filters, no ceilings" data-tip-side="right"><img src="assets/logo-danger.svg" alt="" width="40" height="40" draggable="false"></button></div>
   </nav>
   <main class="panel">
     <div class="content">
+      <aside class="stream-callout" aria-label="Streaming badge">
+        <img src="assets/badges/stream-phenomenon.png" alt="" width="40" height="40" draggable="false">
+        <div class="stream-callout-text"><b>New: Streaming badge script</b>
+          <span class="stream-callout-where"><svg class="stream-arrow" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12H5M11 5l-7 7 7 7"/></svg><span>Open the <b class="go-text">green button</b> in the sidebar</span></span></div>
+        <button class="btn go" type="button" data-zone-go="stream">Open Streaming</button>
+      </aside>
       <div id="start" class="start"><button id="load-generator" class="btn primary lg" type="button" data-tip="Scripts are built right here in your browser. Nothing is sent.">Load generator</button></div>
       <section id="generator" class="gen" hidden></section>
+      <section id="stream" class="stream" aria-label="Streaming badge" hidden></section>
     </div>
   </main>
 </div>

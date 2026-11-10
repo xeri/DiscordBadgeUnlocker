@@ -93,7 +93,7 @@ button, input { font: inherit; color: inherit; }
 .rail-btn img { width: 40px; height: 40px; display: block; transition: transform 0.15s; }
 .rail-btn:hover img { transform: translateY(-1px); }
 .rail-sep { width: 32px; height: 2px; border-radius: 1px; background: var(--border); }
-.title-danger { display: none; }
+.title-danger, .title-stream { display: none; }
 .panel {
     flex: 1; min-width: 0;
     background: var(--base-lower);
@@ -541,3 +541,99 @@ body[data-zone="danger"] .notes { font-size: 13px; }
 .dz-box > .dz-buttons.dz-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .dz-box > .dz-buttons .btn { min-width: 0; padding: 0 8px; }
 .dz-three .dz-label { grid-column: 1 / -1; }
+
+/* ---------- Streaming zone (assets/zone.js, assets/stream.js): green theme, sidebar button, banner, panel ---------- */
+:root { --go: #23a55a; --go-hover: #1a8a4a; }
+body[data-zone="stream"] {
+    --base-lowest: #1c211e;
+    --base-lower: #212723;
+    --base-low: #252c27;
+    --surface-high: #28302a;
+    --surface-highest: #303a33;
+    --floating: #121513;
+    --tint-resting: rgba(150, 210, 170, 0.06);
+    --tint-hover: rgba(150, 210, 170, 0.1);
+    --tint-pressed: rgba(150, 210, 170, 0.14);
+    --tint-selected: rgba(150, 210, 170, 0.18);
+    --border-muted: rgba(150, 220, 170, 0.05);
+    --border-subtle: rgba(150, 220, 170, 0.12);
+    --border: rgba(150, 220, 170, 0.2);
+    --input: rgba(0, 0, 0, 0.16);
+    --text-2: #cbd6ce;
+    --muted: #9faea3;
+    --link: #8fdcaa;
+    --brand-text: #8fdcaa;
+    --blurple: #248046;
+    --blurple-hover: #1a6334;
+    --blurple-soft: rgba(36, 128, 70, 0.28);
+}
+body[data-zone="stream"] .title-safe { display: none; }
+body[data-zone="stream"] .title-stream { display: inline; font-size: 17px; font-weight: 900; letter-spacing: 0.16em; color: #57d38c; }
+body[data-zone="stream"] #start, body[data-zone="stream"] #generator { display: none !important; }
+body[data-zone="stream"] .stream-callout, body[data-zone="danger"] .stream-callout { display: none; }
+
+/* the sidebar's green button: pulses with a NEW tag until Streaming has been opened once */
+.rail-btn.rail-stream {
+    position: relative; display: grid; place-items: center; border-radius: 50%;
+    background: var(--go); color: #fff; transition: border-radius 0.15s, background-color 0.15s;
+    animation: go-pulse 1.8s ease-out infinite;
+}
+.rail-btn.rail-stream:hover, .rail-btn.rail-stream[aria-pressed="true"] { border-radius: 12px; background: var(--go-hover); }
+.rail-stream svg { display: block; }
+.rail-new {
+    position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%);
+    padding: 1px 5px; border-radius: 6px; background: var(--dnd); border: 2px solid var(--base-lowest);
+    font-size: 9px; font-weight: 800; line-height: 12px; letter-spacing: 0.04em; color: #fff;
+}
+:root[data-stream-seen] .rail-stream { animation: none; }
+:root[data-stream-seen] .rail-new { display: none; }
+@keyframes go-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(35, 165, 90, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(35, 165, 90, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(35, 165, 90, 0); }
+}
+
+/* the banner that leads to it (the only way in on phones, which have no sidebar) */
+.stream-callout {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding: 12px 16px;
+    border-radius: var(--r-lg); border: 2px solid var(--go);
+    background: color-mix(in srgb, var(--go) 16%, var(--surface-high));
+}
+.stream-callout > img { width: 40px; height: 40px; flex: none; }
+.stream-callout-text { flex: 1 1 220px; display: grid; gap: 2px; min-width: 0; font-size: 14px; color: var(--text-2); }
+.stream-callout-text > b { font-size: 16px; color: var(--text-strong); }
+.go-text { color: #57d38c; }
+.stream-callout-where { display: flex; align-items: center; gap: 8px; }
+.stream-arrow { flex: none; display: block; width: 20px; height: 20px; color: #57d38c; animation: nudge 1.2s ease-in-out infinite; }
+@keyframes nudge { 50% { transform: translateX(-5px); } }
+.btn.go { background: var(--go); border-color: transparent; color: #fff; font-weight: 600; }
+.btn.go:hover { background: var(--go-hover); }
+
+/* the panel */
+.stream-gen { padding-top: 0; }
+.stream-hero { display: flex; align-items: center; gap: 16px; }
+.stream-hero img { width: 56px; height: 56px; flex: none; }
+.stream-hero h2 { margin: 0; font-size: 20px; color: var(--text-strong); }
+.stream-hero p { margin: 2px 0 0; font-size: 14px; color: var(--text-2); }
+.stream-eta, .stream-note { margin: 0; font-size: 14px; color: var(--text-2); }
+.stream-eta b { color: var(--text-strong); }
+.stream-note.warn { color: var(--warning); }
+.stream-warning {
+    padding: 12px 16px; border-radius: var(--r-lg); border: 2px solid var(--danger);
+    background: rgba(218, 55, 60, 0.16); color: #ffd7d6;
+}
+.stream-warning strong { display: block; font-size: 17px; font-weight: 800; letter-spacing: 0.02em; color: #ff8a8d; }
+.stream-warning p { margin: 6px 0 0; font-size: 14px; }
+.stream-warning b { color: #fff; }
+.stream-steps ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; color: var(--text-2); }
+.stream-steps b { color: var(--text-strong); }
+.stream-steps code, kbd {
+    padding: 1px 5px; border-radius: 4px; background: var(--tint-hover); border: 1px solid var(--border-subtle);
+    font: 12px var(--mono); color: var(--text-strong);
+}
+@media (max-width: 720px) {
+    .stream-callout-where { display: none; } /* no sidebar: the button is the way in */
+}
+@media (prefers-reduced-motion: reduce) {
+    .rail-btn.rail-stream, .stream-arrow { animation: none; }
+}

@@ -13,14 +13,6 @@
     const MAX_SESSION_MS = 23 * 3600 * 1000;
     const SESSION_GAP_MS = 10 * 60 * 1000;
 
-    const CLIENT_VERSION = "1.0.9253";
-    const CLIENT_BUILD_NUMBER = 594031;
-    const NATIVE_BUILD_NUMBER = 88414;
-    const OS_VERSION = "10.0.26200";
-    const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) discord/1.0.9253 Chrome/148.0.7778.280 " +
-        "Electron/42.7.1 Safari/537.36";
-
     if (window[NS]) {
         console.warn(`${LABEL} Already running. To stop: window.${NS}.stop()`);
         return;
@@ -74,12 +66,10 @@
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
         return btoa(binary);
     };
-    const b64utf8 = value => toBase64(new TextEncoder().encode(value));
     const sha256 = async value => new Uint8Array(
         await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
     );
     const sumHours = games => games.reduce((total, game) => total + game.hours, 0);
-    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
     // Probing Discord's modules makes some of them log warnings; keep the console quiet meanwhile.
     function quietly(fn) {
@@ -90,17 +80,6 @@
         } finally {
             console.warn = origWarn;
         }
-    }
-
-    function getWebpackRequire() {
-        if (window.Vencord?.Webpack?.wreq?.c) return window.Vencord.Webpack.wreq;
-        if (typeof webpackChunkdiscord_app === "undefined") return null;
-        let req;
-        webpackChunkdiscord_app.push([[Symbol("multi-game-presence")], {}, incoming => {
-            if (Object.keys(incoming?.c ?? {}).length > Object.keys(req?.c ?? {}).length) req = incoming;
-        }]);
-        webpackChunkdiscord_app.pop();
-        return req;
     }
 
     function collectExports(req) {
@@ -126,16 +105,7 @@
         }));
     }
 
-    // Discord's translated messages are a Proxy that answers every property name with a function,
-    // so they'd pass the Dispatcher check. A real object has nothing under a made-up name.
-    function answersAnything(value) {
-        try {
-            return value[`__${NS}_probe`] !== undefined;
-        } catch (_) {
-            return true;
-        }
-    }
-
+    // answersAnything skips Discord's translation Proxy, which would pass the Dispatcher check.
     function findDispatcher(exports) {
         return quietly(() => exports.find(value => {
             try {
@@ -149,50 +119,17 @@
 
     try {
         validateGames();
-        const req = getWebpackRequire();
-        if (!req?.c) throw new Error("Discord Webpack registry was not found.");
+        const req = webpackRequire();
+        if (!req) throw new Error("Discord Webpack registry was not found.");
         const exports = collectExports(req);
         const runStore = findStore(exports, "RunningGameStore");
         const dispatcher = findDispatcher(exports);
         if (!runStore || !dispatcher) throw new Error("RunningGameStore/Dispatcher was not found.");
-        const authStore = findStore(exports, "AuthenticationStore");
-        const userStore = findStore(exports, "UserStore");
+        // Discord's own HTTP client adds the auth and super-properties headers, so the token is never read.
+        const client = quietly(() => findHttpClient(req));
+        if (!client) throw new Error("Discord's internal HTTP client could not be located.");
 
         console.log(`${LABEL} Fixed list: ${GAMES.length} games, ${TOTAL_HOURS}h total.`);
-
-        function getToken() {
-            try {
-                const token = authStore?.getToken?.();
-                if (token && typeof token === "string") return token;
-            } catch (_) {}
-            return quietly(() => {
-                for (const exp of exports) {
-                    try {
-                        if (exp && typeof exp.getToken === "function" && exp.getName?.() === "AuthenticationStore") {
-                            const token = exp.getToken();
-                            if (token && typeof token === "string") return token;
-                        }
-                    } catch (_) {}
-                }
-                return null;
-            });
-        }
-
-        function getUserId(token) {
-            try {
-                const uid = userStore?.getCurrentUser?.()?.id || authStore?.getId?.();
-                if (uid && /^\d+$/.test(uid)) return String(uid);
-            } catch (_) {}
-            try {
-                const part = String(token ?? "").split(".")[0];
-                if (part && part !== "mfa") {
-                    const pad = "=".repeat((4 - (part.length % 4)) % 4);
-                    const decoded = atob(part + pad);
-                    if (/^\d+$/.test(decoded)) return decoded;
-                }
-            } catch (_) {}
-            return "";
-        }
 
         async function generateFingerprint(userId) {
             const out = new Uint8Array(146);
@@ -218,80 +155,16 @@
             return toBase64(out);
         }
 
-        function buildSuperProps(launchSignature, heartbeatSession, clientLaunchId) {
-            return b64utf8(JSON.stringify({
-                os: "Windows",
-                browser: "Discord Client",
-                release_channel: "stable",
-                client_version: CLIENT_VERSION,
-                os_version: OS_VERSION,
-                os_arch: "x64",
-                app_arch: "x64",
-                system_locale: "en-US",
-                has_client_mods: false,
-                browser_user_agent: USER_AGENT,
-                browser_version: "42.7.1",
-                os_sdk_version: "26200",
-                client_build_number: CLIENT_BUILD_NUMBER,
-                native_build_number: NATIVE_BUILD_NUMBER,
-                client_event_source: null,
-                client_app_state: "focused",
-                client_launch_id: clientLaunchId,
-                launch_signature: launchSignature,
-                client_heartbeat_session_id: heartbeatSession
-            }));
-        }
-
         const launchSignature = uuid();
         const heartbeatSession = uuid();
-        const clientLaunchId = uuid();
-        const superProps = buildSuperProps(launchSignature, heartbeatSession, clientLaunchId);
         let auth = null;
 
-        async function getAnalyticsToken(token) {
-            try {
-                const res = await fetch("/api/v9/users/@me?with_analytics_token=true", {
-                    headers: {
-                        "authorization": token,
-                        "x-super-properties": superProps
-                    }
-                });
-                if (!res.ok) return null;
-                const data = await res.json();
-                return data.analytics_token ?? null;
-            } catch (_) {
-                return null;
-            }
-        }
-
+        // Fresh on every claim: the analytics token and account from GET /users/@me, then its fingerprint.
         async function prepareAuth() {
-            if (auth) return auth;
-            const token = getToken();
-            if (!token) throw new Error("Discord token could not be found.");
-            const userId = getUserId(token);
-            if (!userId) throw new Error("Discord user ID could not be decoded.");
-            const analyticsToken = await getAnalyticsToken(token);
-            if (!analyticsToken) throw new Error("analytics_token could not be retrieved.");
-            const fingerprint = await generateFingerprint(userId);
-            auth = { token, userId, analyticsToken, fingerprint, superProps };
-            return auth;
-        }
-
-        // Discord's /users/@me/consent. "personalization" is "Use data to personalize my Discord
-        // experience", which badge progress needs; "usage_statistics" is "Use data to improve Discord".
-        async function readConsent(currentAuth) {
-            const unknown = { personalization: null, usage: null };
-            try {
-                const res = await fetch("/api/v9/users/@me/consent", {
-                    headers: { "authorization": currentAuth.token, "x-super-properties": currentAuth.superProps }
-                });
-                if (!res.ok) return unknown;
-                const data = await res.json();
-                const flag = value => (typeof value === "boolean" ? value : null);
-                return { personalization: flag(data?.personalization?.consented), usage: flag(data?.usage_statistics?.consented) };
-            } catch (_) {
-                return unknown;
-            }
+            const context = { ...(await getAuthContext(client)), client };
+            context.fingerprint = await generateFingerprint(context.userId);
+            auth = context;
+            return context;
         }
 
         let seq = 0;
@@ -378,43 +251,6 @@
             }
             return sessions.flatMap(session => buildSessionEvents(game, session.start, session.durationMs, fingerprint));
         };
-
-        async function postScienceEvents(events, currentAuth, retry = 0) {
-            try {
-                const res = await fetch("/api/v9/science", {
-                    method: "POST",
-                    headers: {
-                        "accept": "*/*",
-                        "accept-language": "en-US",
-                        "authorization": currentAuth.token,
-                        "content-type": "application/json",
-                        "origin": "https://discord.com",
-                        "referer": "https://discord.com/channels/@me",
-                        "x-super-properties": currentAuth.superProps
-                    },
-                    referrer: "https://discord.com/channels/@me",
-                    body: JSON.stringify({ token: currentAuth.analyticsToken, events })
-                });
-                if (res.status === 204 || res.status === 200) return true;
-                if (res.status === 429 && retry < 3) {
-                    const retryHeader = res.headers.get("retry-after");
-                    const waitSec = retryHeader ? parseFloat(retryHeader) : 2.5;
-                    console.warn(`${LABEL} Rate limited (429). Retrying in ${waitSec.toFixed(1)}s...`);
-                    await wait(Math.max(waitSec * 1000, 2000));
-                    return await postScienceEvents(events, currentAuth, retry + 1);
-                }
-                const text = await res.text().catch(() => "");
-                console.warn(`${LABEL} Science request returned ${res.status}` +
-                    (text ? `: ${text.slice(0, 200)}` : ""));
-                return false;
-            } catch (err) {
-                if (retry < 2) {
-                    await wait(1500);
-                    return await postScienceEvents(events, currentAuth, retry + 1);
-                }
-                throw err;
-            }
-        }
 
         const original = {};
         const patchable = [
@@ -546,7 +382,7 @@
             try {
                 const currentAuth = await prepareAuth();
                 if (stopped) return 0;
-                console.log(`${LABEL} User ID: ${currentAuth.userId}`);
+                console.log(`${LABEL} Connected as ${currentAuth.username} (User ID: ${currentAuth.userId}).`);
                 console.log(`${LABEL} ✓ Stable executable fingerprint ready.`);
 
                 // Only games not yet sent to this account (by any of the three scripts). Already-sent
@@ -560,7 +396,7 @@
                 }
                 if (!CONFIG.dryRun) {
                     // Without the personalization setting nothing counts, so don't mark games as sent.
-                    const consent = await readConsent(currentAuth);
+                    const consent = await readConsent(client);
                     if (consent.personalization === false) {
                         throw new Error("\"Use data to personalize my Discord experience\" is off (User Settings > " +
                             "Data & Privacy), so Discord won't count this. Turn it on, then paste this again.");
@@ -595,12 +431,7 @@
                     const events = chunk.flatMap((game, idx) =>
                         buildGameEvents(game, currentAuth.fingerprint, i + idx)
                     );
-                    let ok = false;
-                    try {
-                        ok = CONFIG.dryRun ? true : await postScienceEvents(events, currentAuth);
-                    } catch (err) {
-                        console.warn(`${LABEL} Batch at ${i} failed: ${err.message}`);
-                    }
+                    const ok = await sendBatch(events, currentAuth, () => stopped);
                     if (ok) {
                         claimed += chunk.length;
                         claimedHours += sumHours(chunk);

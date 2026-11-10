@@ -1,6 +1,6 @@
 ---
 name: discord-badge-unlocker
-description: Build Discord console scripts for the Game Variety (100+ games) and Game Time (5,000h) profile badges from a fixed, verified game table. Use when someone asks for a Discord game badge script, Game Variety / Game Time badge, "games played" or "hours played" badge, multi-game-presence or game-time-presence script, or wants a list of games with hours turned into a Discord script.
+description: Build Discord console scripts for the Game Variety (100+ games) and Game Time (5,000h) profile badges from a fixed, verified game table, and a stream-time script for the Streaming badge. Use when someone asks for a Discord game badge script, Game Variety / Game Time / Streaming badge, "games played", "hours played" or "hours streamed" badge, multi-game-presence or game-time-presence script, or wants a list of games with hours turned into a Discord script.
 ---
 
 # Discord Badge Unlocker
@@ -10,10 +10,10 @@ Turns a list of games and hours into three deterministic console scripts, then c
 | File | What it is |
 |---|---|
 | `discord-badge-unlocker.js` | **Main.** Covers both badges. Sends each game once, with its hours, through Discord's own HTTP client. Never reads the token. |
-| `multi-game-presence.js` | Advanced. Original-style Variety engine with a Rich Presence rotation, which stops after the claim by default. Reads the token in memory. |
+| `multi-game-presence.js` | Advanced. Original-style Variety engine with a Rich Presence rotation, which stops after the claim by default. Also sends through Discord's own HTTP client and never reads the token. |
 | `game-time-presence.js` | Advanced. Same engine as Main under the original `window.__gameTimePresence` (`boost()`) name. |
 
-All three embed the same table and share a per-account "already sent" history, so running any mix of them never sends a game twice.
+All three embed the same table and the same Discord client code (`scripts/templates/client.js`), and share a per-account "already sent" history, so running any mix of them never sends a game twice.
 
 The web generator (`index.html` at the repo root) uses this same code, so the page and this skill produce byte-identical files.
 
@@ -103,9 +103,13 @@ It runs all three scripts in a mocked Discord client and checks the following:
 - every ordered pair of scripts sends nothing on the second run
 - another account in the same client still gets everything
 - `resetClaimed()` resends, and the Variety rotation stops after its claim
+- every script sends through Discord's own HTTP client, never calls `fetch` and never reads the token
+- the Discord client block is byte-identical across files
 - the HTTP client and Dispatcher lookups skip Discord's translation Proxy, which answers every property name
+- Discord's modules are found past a client mod's smaller webpack runtime, and through Vencord's `wreq` and `RestAPI`
 - every script stops before sending if "Use data to personalize my Discord experience" is off, and only warns if the setting can't be read
 - rate limits (429) and lost requests are retried with the same events
+- a 401/403 gets one fresh analytics token and the same events again; a second one drops only that batch, unmarked, and nothing is resent if the logged-in account changed
 - with `localStorage` hidden, the history goes through an iframe and survives a reload
 
 Don't hand over files that fail.
@@ -118,5 +122,25 @@ Give the user the Main script (`discord-badge-unlocker.js`), plus `GAMES.md`, an
 - **Wait:** badges can take 24–48h to update. Don't re-run it in the meantime.
 - **Resending:** `window.__discordBadgeUnlocker.resetClaimed()` forgets what was sent. Discord hides `localStorage` from the console, so the scripts reach it through a hidden iframe; the history should survive a reload (not yet confirmed in Discord).
 - **Risk:** Educational & Research Use Only: Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](https://github.com/xeri/DiscordBadgeUnlocker/blob/main/DISCLAIMER.md).
+
+## Streaming badge
+
+`stream-time.js` sends stream time while the user is really live in a server voice channel. It reads their stream and viewer count from Discord's `ApplicationStreamingStore` and sends `media_session_joined`, `video_stream_started`, one `video_stream_heartbeat` a minute and `video_stream_ended` through Discord's own HTTP client.
+
+```bash
+node $S/build.mjs stream --hours 100 [--turbo auto|off] [--no-viewer pause|drop] [--turbo-rate 10] [--no-split] [--dry-run] --out out/stream
+```
+- **`--turbo auto`** (default) claims `--turbo-rate` hours (1–23, default 10) a minute while someone watches. **`off`** claims one minute a minute.
+- **`--no-viewer pause`** (default) sends nothing until a viewer is back. **`drop`** keeps sending one minute a minute with nobody watching, which probably counts for nothing.
+- Sessions are split at 23h unless `--no-split`. Hours: 0.1–5,000 (Phenomenon).
+- Progress is saved per account, so pasting the script again carries on toward the target. `window.__streamTime.resetProgress()` starts over.
+
+Tell the user:
+1. Join a server voice channel in the desktop app and Go Live. Any window works.
+2. Have someone watch; an alt counts. Hours only count with a viewer.
+3. Paste the script and stay live until it says Done.
+4. Turbo is untested, so start with a small target. Badges update in 24–48h.
+
+The web page builds the same file in its Streaming zone (the green sidebar button). `npm test` runs it in a mocked client.
 
 Credit: based on [everyoneexe/discord-game-badge-presence](https://github.com/everyoneexe/discord-game-badge-presence) (GPL-3.0).

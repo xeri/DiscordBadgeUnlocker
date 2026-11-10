@@ -12,6 +12,8 @@
 //   node build.mjs build --selection selection.json --out out/ [--catalog F]
 //        [--track-start YYYY-MM-DD | --no-track-start] [--batch-size 25] [--delay-ms 450] [--dry-run]
 //        [--variety-batch-size 5] [--variety-delay-ms 4000] [--rotate-minutes 30] [--keep-rotating]
+//   node build.mjs stream --hours 100 [--turbo auto|off] [--no-viewer pause|drop] [--turbo-rate 10] [--no-split]
+//        [--dry-run] [--out out/]
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -22,7 +24,7 @@ import {
     normalizeCatalog, normalizeSelection, parseCatalog, parseRanking, pickFromRanking, pickRandom, resolveSelection,
     searchCatalog, serializeCatalog, splitEvenly, summarize, validateTable, vibeKey
 } from "./core.mjs";
-import { loadTemplates, normalizeOptions, renderGamesMarkdown, renderScripts } from "./templates.mjs";
+import { loadTemplates, normalizeOptions, renderGamesMarkdown, renderScripts, renderStream } from "./templates.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Repo snapshot when the skill lives in the DiscordBadgeUnlocker repo (skills/<name>/scripts/ → repo root).
@@ -233,6 +235,28 @@ async function cmdBuild(args) {
     log("  GAMES.md, table.json");
 }
 
+// The Streaming zone's script: stream time for the Streaming badge, while you're live with a viewer.
+async function cmdStream(args) {
+    const pick = (key, allowed, fallback) => {
+        const value = str(args, key, fallback);
+        if (!allowed.includes(value)) throw new Error(`--${key} must be ${allowed.join(" or ")}`);
+        return value;
+    };
+    const script = renderStream({
+        hours: str(args, "hours", 100),
+        turbo: pick("turbo", ["auto", "off"], "auto"),
+        noViewer: pick("no-viewer", ["pause", "drop"], "pause"),
+        turboHoursPerMinute: str(args, "turbo-rate", 10),
+        split: !args["no-split"],
+        dryRun: !!args["dry-run"]
+    }, await loadTemplates());
+    const outDir = str(args, "out", "out");
+    await mkdir(outDir, { recursive: true });
+    await writeFile(join(outDir, script.file), script.text);
+    log(`Built ${script.file} (${formatCount(script.text.length)} bytes) → ${outDir}/`);
+    for (const line of script.text.split("\n").slice(2, 4)) log(line.replace(/^ \* /, "  "));
+}
+
 const COMMANDS = {
     "fetch-catalog": cmdFetchCatalog,
     "slim-catalog": cmdSlimCatalog,
@@ -240,13 +264,14 @@ const COMMANDS = {
     vibes: cmdVibes,
     pick: cmdPick,
     random: cmdRandom,
-    build: cmdBuild
+    build: cmdBuild,
+    stream: cmdStream
 };
 
 const [command, ...rest] = process.argv.slice(2);
 const run = COMMANDS[command];
 if (!run) {
-    log("Usage: node build.mjs <fetch-catalog|slim-catalog|search|vibes|pick|random|build> [options]");
+    log("Usage: node build.mjs <fetch-catalog|slim-catalog|search|vibes|pick|random|build|stream> [options]");
     log("See the top of this file or SKILL.md for the options.");
     process.exit(command ? 1 : 0);
 }

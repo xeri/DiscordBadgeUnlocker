@@ -129,7 +129,7 @@ const TIER_COLOR = {
     casual: "#9abbca", recreational: "#8dbc82", dedicated: "#58ce6b", committed: "#39d7d7", serious: "#39caff",
     devoted: "#5aa2ff", seasoned: "#a98bff", ironclad: "#ff73ea", unshakeable: "#ff6b88", eternal: "#ffae03"
 };
-const tierIcon = (badge, tier) => new URL(`badges/${badge}-${tier.key}.svg`, import.meta.url).href;
+const tierIcon = (badge, tier) => new URL(`./badges/${badge}-${tier.key}.svg`, import.meta.url).href;
 const topTier = badge => BADGE_TIERS[badge].length - 1;
 const isTier = (badge, i) => Number.isInteger(i) && i >= -1 && i <= topTier(badge);
 

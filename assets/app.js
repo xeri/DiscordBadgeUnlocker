@@ -73,6 +73,20 @@ document.addEventListener("zonechange", event => {
     if (event.detail?.zone === "danger" && !start.hidden && !button.disabled) button.click();
 });
 
+// Streaming (assets/stream.js) has its own panel: loaded the first time, shown only in its zone. It needs no catalog.
+const streamRoot = document.getElementById("stream");
+let streamMounted = null;
+document.addEventListener("zonechange", event => {
+    const open = event.detail?.zone === "stream";
+    streamRoot.hidden = !open;
+    if (!open || streamMounted) return;
+    streamMounted = import("./stream.js").then(({ mount }) => mount(streamRoot)).catch(error => {
+        streamMounted = null;
+        streamRoot.textContent = `Couldn't load the Streaming panel: ${error.message}`;
+        console.error(error);
+    });
+});
+
 button.addEventListener("click", async () => {
     button.disabled = true;
     button.textContent = "Loading…";

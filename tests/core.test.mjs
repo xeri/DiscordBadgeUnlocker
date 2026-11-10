@@ -7,10 +7,12 @@ import assert from "node:assert/strict";
 import {
     BADGE_TIERS, TIERS, catalogIndex, countByVibe, countableHours, fitTier, formatCount, formatHours, minHours, normalizeCatalog,
     normalizeSelection, parseCatalog, pickFromRanking, pickRandom, randomPool, resolveSelection, scaleTo, searchCatalog,
-    sendGames, sendHours, serializeCatalog, splitEvenly, sumHours, summarize, tierAim, tierFor, validateTable, vibesFor
+    sendGames, sendHours, serializeCatalog, splitEvenly, STREAM_TIERS, streamEta, sumHours, summarize, tierAim, tierFor,
+    validateTable, vibesFor
 } from "../skills/discord-badge-unlocker/scripts/core.mjs";
 import {
-    OUTPUTS, loadTemplates, normalizeFirstHeartbeat, normalizeOptions, renderFirstHeartbeat, renderScripts, zonedTimeToMs
+    OUTPUTS, STREAM_SCRIPT, loadTemplates, normalizeFirstHeartbeat, normalizeOptions, normalizeStream, renderFirstHeartbeat,
+    renderScripts, renderStream, zonedTimeToMs
 } from "../skills/discord-badge-unlocker/scripts/templates.mjs";
 import vm from "node:vm";
 
@@ -267,6 +269,20 @@ test("renderScripts is deterministic and shares one table block", async () => {
     assert.ok(!Object.values(a).some(s => s.text.includes("Math.random")));
 });
 
+test("every script, the Danger Zone test included, carries the same Discord client block", async () => {
+    const templates = await loadTemplates();
+    const table = resolveSelection(CATALOG, { games: [{ id: "100001", hours: 2 }] }).table;
+    const scripts = Object.values(renderScripts(table, {}, templates)).map(s => s.text);
+    scripts.push(renderFirstHeartbeat({ game: FH_GAME, firstMs: FH_FIRST, hours: 2 }, templates).text);
+    const client = templates.client.trimEnd();
+    assert.ok(client.startsWith("    // ===== Discord client") && client.endsWith("    // ===== End of Discord client ====="));
+    for (const text of scripts) {
+        assert.equal(text.split(client).length, 2); // exactly once
+        assert.doesNotThrow(() => new vm.Script(text));
+        assert.ok(!/\bgetToken\b|\bfetch\s*\(/.test(text)); // nothing reads the token or calls the API directly
+    }
+});
+
 // ---------- Discord's limits and the Danger Zone ----------
 
 test("Game Time only counts time from 2025-12-08 on", () => {
@@ -441,4 +457,234 @@ test("the page clock shift fakes local time in a time zone, then restores it", a
     assert.ok(r.same);
     const after = vm.runInContext("[Date, Intl.DateTimeFormat, Date.prototype.getHours, Date.prototype.toString]", ctx);
     assert.ok(before.every((v, i) => v === after[i]));
+});
+
+// ---------- Streaming zone: stream time ----------
+
+const HOUR = 3600000;
+
+// Runs a rendered stream-time script against a mocked Discord. `live` is the stream you're live with
+// ({ guildId, channelId, viewers }, or null), changeable through setLive(). Timers don't fire on their own:
+// step() runs the next one (the 1.2s auto-start, then one tick a minute) and lets the script settle.
+async function runStream(text, { live = { guildId: "1000", channelId: "2000", viewers: 1 }, personalization = true,
+    storage = new Map(), science = () => 204 } = {}) {
+    const posts = [];
+    const logs = [];
+    const timers = [];
+    const counts = { tokenReads: 0, fetchCalls: 0, science: 0 };
+    let current = live;
+    const localStorage = {
+        getItem: key => (storage.has(key) ? storage.get(key) : null),
+        setItem: (key, value) => { storage.set(key, String(value)); },
+        removeItem: key => { storage.delete(key); },
+        key: i => Array.from(storage.keys())[i] ?? null,
+        get length() { return storage.size; }
+    };
+    const ctx = {
+        console: { log: m => logs.push(String(m)), warn: m => logs.push(String(m)), error: m => logs.push(String(m)) },
+        crypto: globalThis.crypto, TextEncoder, btoa,
+        setTimeout: (fn, ms) => timers.push({ fn, ms }),
+        clearTimeout: id => { if (timers[id - 1]) timers[id - 1].fn = null; },
+        addEventListener() {},
+        fetch: async () => { counts.fetchCalls += 1; throw new Error("fetch is not used"); },
+        localStorage
+    };
+    ctx.window = ctx;
+    vm.createContext(ctx);
+    const client = {
+        get: async ({ url }) => ({ ok: true, status: 200, body: url === "/users/@me/consent"
+            ? { personalization: { consented: personalization }, usage_statistics: { consented: true } }
+            : { id: "111111111111111111", username: "tester", analytics_token: "tok" } }),
+        post: async ({ url, body }) => {
+            const status = science(counts.science++);
+            if (status !== 204) throw Object.assign(new Error(`HTTP ${status}`), { status });
+            posts.push(...body.events);
+            return { ok: true, status: 204 };
+        },
+        del: async () => ({})
+    };
+    const streamingStore = {
+        getName: () => "ApplicationStreamingStore",
+        getCurrentUserActiveStream: () => (current ? { streamType: "guild", guildId: current.guildId, channelId: current.channelId, ownerId: "111111111111111111" } : null),
+        getViewerIds: () => Array.from({ length: current?.viewers ?? 0 }, (_, i) => String(900 + i))
+    };
+    const authStore = { getName: () => "AuthenticationStore", getToken: () => { counts.tokenReads += 1; return "secret"; } };
+    // Discord's translated messages come first: a Proxy with a function under every name.
+    const i18n = new Proxy({}, { get: (_, key) => (key === "then" ? undefined : () => "") });
+    const requireFn = id => (id === "1" ? { HTTP: client } : undefined);
+    requireFn.m = { 1: () => "HTTPUtils" };
+    requireFn.c = { 0: { exports: { default: i18n } }, 1: { exports: { HTTP: client } }, 2: { exports: { default: streamingStore } }, 3: { exports: authStore } };
+    ctx.webpackChunkdiscord_app = { push: ([, , fn]) => fn(requireFn), pop() {} };
+    const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(setImmediate); };
+    vm.runInContext(text, ctx);
+    await settle();
+    const step = async (n = 1) => {
+        for (let i = 0; i < n; i++) {
+            const next = timers.find(t => t.fn);
+            if (!next) return;
+            const fn = next.fn;
+            next.fn = null;
+            fn();
+            await settle();
+        }
+    };
+    return { posts, logs, ctx, counts, step, setLive: value => { current = value; }, api: () => ctx.window[STREAM_SCRIPT.ns] };
+}
+
+const heartbeats = events => events.filter(e => e.type === "video_stream_heartbeat");
+const tracked = events => heartbeats(events).reduce((sum, e) => sum + e.properties.duration_tracked_ms, 0);
+
+test("streamEta and the Streaming tiers", () => {
+    assert.deepEqual(STREAM_TIERS.map(t => t.min), [1, 5, 20, 75, 150, 300, 500, 1000, 2000, 5000]);
+    assert.deepEqual(streamEta({ hours: 100 }), { ticks: 10, liveMinutes: 9 });
+    assert.deepEqual(streamEta({ hours: 5000 }), { ticks: 500, liveMinutes: 499 });
+    assert.deepEqual(streamEta({ hours: 2, turbo: "off" }), { ticks: 120, liveMinutes: 119 });
+});
+
+test("normalizeStream checks hours and clamps the rest", () => {
+    assert.throws(() => normalizeStream({ hours: 0 }), /at least 0\.1/);
+    assert.throws(() => normalizeStream({ hours: 5001 }), /at most 5,000/);
+    assert.deepEqual(normalizeStream({}), { hours: 100, turbo: "auto", noViewer: "pause", turboHoursPerMinute: 10, split: true, dryRun: false });
+    const o = normalizeStream({ hours: 2.04, turbo: "off", noViewer: "pause", turboHoursPerMinute: 99, split: false, dryRun: true });
+    assert.deepEqual(o, { hours: 2, turbo: "off", noViewer: "pause", turboHoursPerMinute: 23, split: false, dryRun: true });
+});
+
+test("the stream script renders deterministically, with the client block, and parses", async () => {
+    const templates = await loadTemplates();
+    const a = renderStream({ hours: 25 }, templates).text;
+    assert.equal(a, renderStream({ hours: 25 }, templates).text);
+    assert.equal(a.split(templates.client.trimEnd()).length, 2);
+    assert.doesNotThrow(() => new vm.Script(a));
+    assert.ok(!/Math\.random|\bgetToken\b|\bfetch\s*\(/.test(a));
+    assert.match(renderStream({ hours: 25, noViewer: "drop" }, templates).text, /WARNING: no-viewer mode is DROP/);
+    assert.doesNotMatch(renderStream({ hours: 25 }, templates).text, /WARNING: no-viewer mode is DROP/); // pause is the default
+});
+
+test("Turbo with a viewer: 10h a minute to the exact target, sessions kept to 23h", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 25 }, templates).text);
+    await h.step(4); // auto-start (first tick right away), then three more minutes
+    const types = h.posts.map(e => e.type);
+    assert.deepEqual(types, [
+        "media_session_joined", "video_stream_started", "video_stream_heartbeat", "video_stream_heartbeat",
+        "video_stream_ended", "media_session_joined", "video_stream_started", "video_stream_heartbeat", "video_stream_ended"
+    ]);
+    assert.deepEqual(heartbeats(h.posts).map(e => e.properties.duration_tracked_ms / HOUR), [10, 10, 5]);
+    assert.deepEqual(heartbeats(h.posts).map(e => e.properties.total_duration_ms / HOUR), [10, 20, 5]);
+    assert.deepEqual(h.posts.filter(e => e.type === "video_stream_ended").map(e => e.properties.duration_ms / HOUR), [20, 5]);
+    assert.equal(new Set(h.posts.map(e => e.properties.client_heartbeat_session_id)).size, 2);
+    assert.ok(h.posts.every(e => e.properties.guild_id === "1000" && e.properties.channel_id === "2000" && e.properties.channel_type === 2));
+    assert.deepEqual(h.posts.map(e => e.properties.event_sequence_number), h.posts.map((_, i) => i + 1));
+    assert.ok(h.logs.some(l => /Done: 25\.0h credited/.test(l)));
+    assert.equal(h.api().status.running, false);
+    assert.equal(h.counts.tokenReads + h.counts.fetchCalls, 0);
+    await h.step(3);
+    assert.equal(heartbeats(h.posts).length, 3); // stopped at the target
+});
+
+test("without splitting, one session carries the whole target", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 25, split: false }, templates).text);
+    await h.step(4);
+    assert.equal(new Set(h.posts.map(e => e.properties.client_heartbeat_session_id)).size, 1);
+    assert.equal(tracked(h.posts), 25 * HOUR);
+});
+
+test("Turbo off sends one minute a minute", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 0.1, turbo: "off" }, templates).text);
+    await h.step(3);
+    assert.deepEqual(heartbeats(h.posts).map(e => e.properties.duration_tracked_ms), [60000, 60000, 60000]);
+    await h.step(5);
+    assert.equal(tracked(h.posts), 0.1 * HOUR); // six minutes, then done
+    assert.equal(heartbeats(h.posts).length, 6);
+});
+
+test("not live: waits and sends nothing until you Go Live", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 10 }, templates).text, { live: null });
+    await h.step(3);
+    assert.equal(h.posts.length, 0);
+    assert.ok(h.logs.some(l => /you're not live/.test(l)));
+    h.setLive({ guildId: "1000", channelId: "2000", viewers: 2 });
+    await h.step(1);
+    assert.equal(tracked(h.posts), 10 * HOUR);
+});
+
+test("nobody watching: drop keeps sending a minute a minute and warns; pause sends nothing", async () => {
+    const templates = await loadTemplates();
+    const drop = await runStream(renderStream({ hours: 10, noViewer: "drop" }, templates).text, { live: { guildId: "1000", channelId: "2000", viewers: 0 } });
+    await drop.step(3);
+    assert.deepEqual(heartbeats(drop.posts).map(e => e.properties.duration_tracked_ms), [60000, 60000, 60000]);
+    assert.ok(drop.logs.some(l => /NOBODY IS WATCHING/.test(l)));
+    drop.setLive({ guildId: "1000", channelId: "2000", viewers: 1 });
+    await drop.step(1);
+    assert.equal(heartbeats(drop.posts).at(-1).properties.duration_tracked_ms, 10 * HOUR - 3 * 60000); // Turbo again, capped at the target
+
+    const pause = await runStream(renderStream({ hours: 30 }, templates).text); // pause is the default
+    await pause.step(1); // viewer: Turbo
+    pause.setLive({ guildId: "1000", channelId: "2000", viewers: 0 });
+    await pause.step(2);
+    assert.equal(tracked(pause.posts), 10 * HOUR);
+    assert.equal(pause.posts.at(-1).type, "video_stream_ended"); // the session closes while paused
+    assert.ok(pause.logs.some(l => /Paused: nobody is watching/.test(l)));
+    pause.setLive({ guildId: "1000", channelId: "2000", viewers: 1 });
+    await pause.step(1);
+    assert.equal(tracked(pause.posts), 20 * HOUR);
+    assert.equal(new Set(pause.posts.map(e => e.properties.client_heartbeat_session_id)).size, 2);
+});
+
+test("moving to another voice channel starts a new session", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 20 }, templates).text);
+    await h.step(1);
+    h.setLive({ guildId: "1000", channelId: "3000", viewers: 1 });
+    await h.step(1);
+    const beats = heartbeats(h.posts);
+    assert.deepEqual(beats.map(e => e.properties.channel_id), ["2000", "3000"]);
+    assert.notEqual(beats[0].properties.client_heartbeat_session_id, beats[1].properties.client_heartbeat_session_id);
+});
+
+test("personalization off stops it unless forced", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 10 }, templates).text, { personalization: false });
+    await h.step(1);
+    assert.equal(h.posts.length, 0);
+    assert.ok(h.logs.some(l => /personalize my Discord experience" is off/.test(l)));
+    const forced = h.api().run({ force: true });
+    await new Promise(setImmediate);
+    for (let i = 0; i < 30; i++) await new Promise(setImmediate);
+    await forced;
+    assert.equal(tracked(h.posts), 10 * HOUR);
+});
+
+test("progress survives a reload: pasting again carries on and stops at the target", async () => {
+    const templates = await loadTemplates();
+    const text = renderStream({ hours: 20 }, templates).text;
+    const storage = new Map();
+    const first = await runStream(text, { storage });
+    await first.step(1);
+    await first.api().stop();
+    assert.equal(tracked(first.posts), 10 * HOUR);
+    assert.equal(first.posts.at(-1).type, "video_stream_ended");
+
+    const second = await runStream(text, { storage });
+    await second.step(2);
+    assert.equal(tracked(second.posts), 10 * HOUR);
+    assert.ok(second.logs.some(l => /10\.0h already credited/.test(l)));
+
+    const third = await runStream(text, { storage });
+    await third.step(1);
+    assert.equal(third.posts.length, 0);
+    assert.ok(third.logs.some(l => /Nothing to do/.test(l)));
+    third.api().resetProgress();
+    assert.equal(storage.size, 0);
+});
+
+test("rate limits are retried with the same heartbeat", async () => {
+    const templates = await loadTemplates();
+    const h = await runStream(renderStream({ hours: 10 }, templates).text, { science: n => (n === 1 ? 429 : 204) });
+    await h.step(2); // auto-start, then the 429 retry wait
+    assert.equal(tracked(h.posts), 10 * HOUR);
+    assert.ok(h.logs.some(l => /Rate limited/.test(l)));
 });

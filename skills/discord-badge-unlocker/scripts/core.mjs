@@ -23,6 +23,25 @@ export const BADGE_TIERS = Object.freeze({
     ])
 });
 
+// The Streaming badge's tiers (hours streamed with someone watching), as lawerth/discord-streamer lists them.
+// Kept apart from BADGE_TIERS, which the game pickers walk.
+export const STREAM_TIERS = tierList([
+    ["newcomer", "Newcomer", 1], ["fledgling", "Fledgling", 5], ["breakout", "Breakout", 20], ["standout", "Standout", 75],
+    ["trendsetter", "Trendsetter", 150], ["headliner", "Headliner", 300], ["superstar", "Superstar", 500],
+    ["sensation", "Sensation", 1000], ["visionary", "Visionary", 2000], ["phenomenon", "Phenomenon", 5000]
+]);
+export const STREAM_MAX_HOURS = STREAM_TIERS.at(-1).min;
+export const STREAM_TICK_MINUTES = 1; // the stream script sends one heartbeat a minute
+
+// Heartbeats a stream-time run sends to reach `hours`, and how long you're live for them (the first goes out
+// right away): Turbo claims turboHoursPerMinute a heartbeat, otherwise each heartbeat is one real minute.
+export function streamEta({ hours, turbo = "auto", turboHoursPerMinute = 10 } = {}) {
+    const minutes = Math.round(Number(hours) * 60);
+    const perTick = turbo === "auto" ? Math.round(Number(turboHoursPerMinute) * 60) : STREAM_TICK_MINUTES;
+    const ticks = minutes > 0 && perTick > 0 ? Math.ceil(minutes / perTick) : 0;
+    return { ticks, liveMinutes: Math.max(0, ticks - 1) * STREAM_TICK_MINUTES };
+}
+
 // The top tiers (100 games, 5,000h), as in the original repo's README.
 export const TIERS = Object.freeze({ games: BADGE_TIERS.variety.at(-1).min, hours: BADGE_TIERS.time.at(-1).min });
 

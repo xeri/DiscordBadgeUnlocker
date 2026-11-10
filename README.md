@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
+Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges, and stream time for the **Streaming** badge. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
 <img alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" width="50%" height="50%"/>
 
 
@@ -47,6 +47,21 @@ npm start
 
 Open <http://127.0.0.1:8080/> and click **Load generator**.
 
+## Streaming badge
+
+Open the generator and click the **green button** in the sidebar (on phones, **Open Streaming**). Set the hours, then choose:
+
+- **Turbo:** Auto claims 10h a minute while someone watches. Off claims one minute a minute.
+- **Nobody watching:** Pause (the default) waits for a viewer. Drop keeps sending one minute a minute, which probably counts for nothing.
+
+Then:
+
+1. In the Discord desktop app, join a server voice channel and **Go Live**. Any window works; no game needed.
+2. Have someone watch. An alt counts. Stream time only counts with a viewer.
+3. Paste `stream-time.js` into the console and stay live until it says Done.
+
+Turbo is untested, so start with a small target like 100h.
+
 ## What's known about the badges
 
 - Only the Discord desktop app counts, not the web version. (Vesktop does not work, it's web)
@@ -61,7 +76,7 @@ Open <http://127.0.0.1:8080/> and click **Load generator**.
 
 ## Credits
 
-Based on [everyoneexe/discord-game-badge-presence](https://github.com/everyoneexe/discord-game-badge-presence).
+Based on [everyoneexe/discord-game-badge-presence](https://github.com/everyoneexe/discord-game-badge-presence). The Vencord-aware client lookup and the analytics-token refresh come from [Zwuiix-cmd/discord-game-badge-presence](https://github.com/Zwuiix-cmd/discord-game-badge-presence). The Streaming script follows [lawerth/discord-streamer](https://github.com/lawerth/discord-streamer)'s stream events and [aboveproof/BadgeFarmer](https://github.com/aboveproof/BadgeFarmer)'s Turbo mode (both MIT); its tier icons are from lawerth/discord-streamer.
 
 ## License
 

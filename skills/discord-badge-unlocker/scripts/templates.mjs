@@ -1,7 +1,8 @@
-// Renders the three console scripts from the two engine templates in ./templates/.
-// Output is deterministic: the same table + options always give byte-identical text.
+// Renders the three console scripts from the two engine templates in ./templates/, each with the
+// shared Discord client block (templates/client.js). Output is deterministic: the same table +
+// options always give byte-identical text.
 
-import { ORIGINAL_REPO, formatHours, roundHours, sumHours, toTenths, trackStartMs } from "./core.mjs";
+import { ORIGINAL_REPO, STREAM_MAX_HOURS, formatCount, formatHours, roundHours, streamEta, sumHours, toTenths, trackStartMs } from "./core.mjs";
 
 export const MACHINE_GUID = "b5a79402-959c-4861-a579-2821dfbb3c2b";
 export const CLAIMED_KEY = "__discordBadgeUnlocker_claimed_ids";
@@ -10,7 +11,9 @@ export const LEGACY_CLAIMED_KEYS = Object.freeze(["__badgePresenceFixed150_claim
 export const TEMPLATE_FILES = Object.freeze({
     telemetry: "templates/telemetry.js",
     variety: "templates/variety.js",
-    firstHeartbeat: "templates/first-heartbeat.js" // Danger Zone test script, rendered by renderFirstHeartbeat()
+    firstHeartbeat: "templates/first-heartbeat.js", // Danger Zone test script, rendered by renderFirstHeartbeat()
+    stream: "templates/stream.js", // Streaming zone script, rendered by renderStream()
+    client: "templates/client.js" // Discord client block, byte-identical in every script
 });
 
 export const OUTPUTS = Object.freeze([
@@ -121,35 +124,8 @@ ${rows.join(",\n")}
     }
 
     // Claimed history is shared by all three scripts and kept per Discord account, so running any
-    // mix of them (or one twice) never sends a game twice. Discord hides window.localStorage from
-    // the console, so it's reached through a hidden same-origin iframe, which keeps the history
-    // after a reload. It's also mirrored on window in case that fails.
-    let storageFrame = null;
-
-    function getStorage() {
-        try {
-            if (window.localStorage) return window.localStorage;
-        } catch (_) {}
-        try {
-            if (!storageFrame) {
-                storageFrame = document.createElement("iframe");
-                storageFrame.style.display = "none";
-                document.body.appendChild(storageFrame);
-            }
-            return storageFrame.contentWindow?.localStorage ?? null;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    // Removes the iframe once pending (a run that may still be saving its result) settles.
-    function releaseStorage(pending) {
-        Promise.resolve(pending).catch(() => {}).finally(() => {
-            try { storageFrame?.remove(); } catch (_) {}
-            storageFrame = null;
-        });
-    }
-
+    // mix of them (or one twice) never sends a game twice. It's saved through getStorage() (in the
+    // Discord client block), which keeps it after a reload, and mirrored on window in case that fails.
     function getClaimedSet(userId) {
         const memory = window[CLAIMED_MEMORY_KEY] ?? {};
         const ids = new Set(Array.isArray(memory[userId]) ? memory[userId] : []);
@@ -227,8 +203,8 @@ function renderHeader(output, table, trackStart, options) {
             ? `Shows each game as your activity for ${options.variety.rotateMinutes} min, in table order, until stop().`
             : `Shows each game as your activity (${options.variety.rotateMinutes} min each) while claiming, then stops.`;
         lines.push(rotation);
-        lines.push("Reads your token in memory to call Discord's API, like the original script;");
-        lines.push("it is never stored or sent anywhere else. Games already sent are skipped.");
+        lines.push("Sends through Discord's own HTTP client. It never reads your token.");
+        lines.push("Games already sent to this account are skipped.");
     }
     lines.push("");
     lines.push("Commands:");
@@ -247,16 +223,23 @@ function renderHeader(output, table, trackStart, options) {
     return ["/*", ...lines.map(line => (line ? ` * ${line}` : " *")), " */"].join("\n");
 }
 
-function fill(template, header, config, block) {
+function clientBlock(templates) {
+    if (typeof templates?.client !== "string") throw new Error(`Template "client" was not loaded.`);
+    return templates.client.trimEnd();
+}
+
+// Header, then config and the generated blocks where the template says // @@CONFIG@@.
+function fill(template, header, blocks) {
     const parts = template.split("// @@CONFIG@@");
     if (parts.length !== 2 || !parts[0].includes("// @@HEADER@@")) throw new Error("Template markers missing.");
-    return parts[0].replace("// @@HEADER@@", header) + config + "\n\n" + block + parts[1];
+    return parts[0].replace("// @@HEADER@@", header) + blocks.join("\n\n") + parts[1];
 }
 
 // table: [{ id, name, exe, hours }] (already resolved and sorted), templates: from loadTemplates().
 export function renderScripts(table, { trackStart = null, options = {}, uncapped = false } = {}, templates) {
     const opts = normalizeOptions(options, { uncapped });
     const block = renderTableBlock(table, { trackStart });
+    const client = clientBlock(templates);
     const out = {};
     for (const output of OUTPUTS) {
         const template = templates?.[output.engine];
@@ -264,7 +247,7 @@ export function renderScripts(table, { trackStart = null, options = {}, uncapped
         out[output.key] = {
             file: output.file,
             ns: output.ns,
-            text: fill(template, renderHeader(output, table, trackStart, opts), renderConfig(output, opts), block)
+            text: fill(template, renderHeader(output, table, trackStart, opts), [renderConfig(output, opts), block, client])
         };
     }
     return out;
@@ -395,7 +378,102 @@ export function renderFirstHeartbeat(input, templates) {
         `        dryRun: ${o.dryRun}`,
         "    });"
     ].join("\n");
-    const parts = template.split("// @@CONFIG@@");
-    if (parts.length !== 2 || !parts[0].includes("// @@HEADER@@")) throw new Error("Template markers missing.");
-    return { file: out.file, ns: out.ns, text: parts[0].replace("// @@HEADER@@", header) + config + parts[1] };
+    return { file: out.file, ns: out.ns, text: fill(template, header, [config, clientBlock(templates)]) };
+}
+
+// ---------- Streaming zone: stream time for the Streaming badge ----------
+
+export const STREAM_SCRIPT = Object.freeze({ file: "stream-time.js", ns: "__streamTime", label: "[Stream Time]" });
+export const STREAM_REFERENCES = Object.freeze([
+    "https://github.com/aboveproof/BadgeFarmer",
+    "https://github.com/lawerth/discord-streamer"
+]);
+export const STREAM_DEFAULTS = Object.freeze({
+    hours: 100, turbo: "auto", noViewer: "pause", turboHoursPerMinute: 10, split: true, dryRun: false
+});
+export const STREAM_SESSION_CAP_HOURS = 23;
+const TURBO_RATE = { min: 1, max: 23 }; // hours a heartbeat claims; under a day, like every session
+
+// { hours, turbo: "auto" | "off", noViewer: "pause" | "drop", turboHoursPerMinute, split, dryRun }. Throws on bad hours.
+export function normalizeStream(input = {}) {
+    const o = input && typeof input === "object" ? input : {};
+    const d = STREAM_DEFAULTS;
+    const hours = toTenths(o.hours ?? d.hours) / 10;
+    if (!(hours >= 0.1)) throw new Error("Hours must be at least 0.1.");
+    if (hours > STREAM_MAX_HOURS) throw new Error(`Hours can be at most ${formatCount(STREAM_MAX_HOURS)}, the top tier.`);
+    return {
+        hours,
+        turbo: o.turbo === "off" ? "off" : "auto",
+        noViewer: o.noViewer === "drop" ? "drop" : "pause",
+        turboHoursPerMinute: int(o.turboHoursPerMinute, d.turboHoursPerMinute, TURBO_RATE.min, TURBO_RATE.max),
+        split: o.split !== false,
+        dryRun: o.dryRun === true
+    };
+}
+
+export function renderStream(input, templates) {
+    const o = normalizeStream(input);
+    const template = templates?.stream;
+    if (typeof template !== "string") throw new Error(`Template "stream" was not loaded.`);
+    const out = STREAM_SCRIPT;
+    const ns = `window.${out.ns}`;
+    const turbo = o.turbo === "auto";
+    const { liveMinutes } = streamEta({ hours: o.hours, turbo: o.turbo, turboHoursPerMinute: o.turboHoursPerMinute });
+    const hrs = h => (Number.isInteger(h) ? formatCount(h) : formatHours(h));
+    const eta = liveMinutes < 120 ? `${liveMinutes} minutes` : `${hrs(Math.round(liveMinutes / 6) / 10)} hours`;
+    const lines = [
+        "Discord Badge Unlocker: stream time (Streaming badge)",
+        `Target: ${hrs(o.hours)}h. Turbo: ${turbo ? `on, ${o.turboHoursPerMinute}h a minute` : "off, 1 minute a minute"}. ` +
+            `Nobody watching: ${o.noViewer}.`,
+        `About ${eta} live with a viewer.`,
+        "",
+        "Before you paste:",
+        "  1. Join a server voice channel and Go Live. Any window or screen works; no game needed.",
+        "  2. Have someone watch the stream (an alt account counts). Hours only count with a viewer.",
+        "  3. Turn on Settings > \"Use data to personalize my Discord experience\"; the script checks it.",
+        "Run: Discord desktop > Ctrl+Shift+I > Console > paste > Enter.",
+        "If the console asks, type: allow pasting",
+        "Keep Discord open and stay live until it says Done.",
+        ""
+    ];
+    if (o.noViewer === "drop") {
+        lines.push("WARNING: no-viewer mode is DROP. With nobody watching it keeps sending 1 minute a",
+            "minute anyway. Discord isn't known to count stream time without a viewer, so that",
+            "part probably adds nothing.");
+    } else {
+        lines.push("No-viewer mode is pause: nothing is sent while nobody watches.");
+    }
+    if (turbo) lines.push("Turbo is untested (BadgeFarmer's author says so): try a small target first.");
+    lines.push(o.split ? `Sessions are split at ${STREAM_SESSION_CAP_HOURS}h, like game sessions (Discord drops those over 24h).`
+        : "Sessions are never split (one session per stream).");
+    if (o.dryRun) lines.push("DRY RUN: builds every event but sends nothing.");
+    lines.push("Sends through Discord's own HTTP client. It never reads your token.",
+        "Vencord's NoTrack can stay on: this posts to /science directly.",
+        "Progress is saved per account, so pasting it again carries on toward the target.",
+        "", "Commands:");
+    const commands = [
+        [`await ${ns}.run()`, "start (it starts by itself)"],
+        [`await ${ns}.run({ force: true })`, "send even if that setting reads as off"],
+        [`${ns}.status`, "progress, live, viewers"],
+        [`${ns}.resetProgress()`, "start over from 0"],
+        [`${ns}.stop()`, ""]
+    ];
+    const width = Math.max(...commands.map(([cmd]) => cmd.length)) + 3;
+    for (const [cmd, what] of commands) lines.push(`  ${what ? cmd.padEnd(width) + what : cmd}`);
+    lines.push("", "Badges can take 24-48h to update.", "Based on aboveproof/BadgeFarmer and lawerth/discord-streamer (MIT):",
+        ...STREAM_REFERENCES);
+    const header = ["/*", ...lines.map(line => (line ? ` * ${line}` : " *")), " */"].join("\n");
+    const config = [
+        `const NS = ${q(out.ns)};`,
+        `    const LABEL = ${q(out.label)};`,
+        "    const CONFIG = Object.freeze({",
+        `        targetHours: ${hoursLiteral(o.hours)},`,
+        `        turbo: ${q(o.turbo)},`,
+        `        noViewer: ${q(o.noViewer)},`,
+        `        turboHoursPerMinute: ${o.turboHoursPerMinute},`,
+        `        sessionCapHours: ${o.split ? STREAM_SESSION_CAP_HOURS : "null"},`,
+        `        dryRun: ${o.dryRun}`,
+        "    });"
+    ].join("\n");
+    return { file: out.file, ns: out.ns, text: fill(template, header, [config, clientBlock(templates)]) };
 }
