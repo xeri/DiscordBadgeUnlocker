@@ -7,7 +7,9 @@ Builds console scripts that unlock Discord's **Game Variety** (100+ games) and *
 
 
 Why have custom games instead of random? Discord could use this game data for new features and personalisation in the future, 
+
 <img width="25%" height="25%" alt="image" src="https://github.com/user-attachments/assets/477c6c4c-87ac-4ebe-92cc-5bde2c79fe12" />
+
 for example, the "Suggested for you" for some widgets
 
 
