@@ -26,7 +26,7 @@ Builds console scripts that unlock Discord's **Game Variety** (100+ games) and *
 
 ## Getting started
 
-1. Open **<https://xeri.github.io/DiscordBadgeUnlocker/>** and click **Load generator**.
+1. Open **<https://xeri.github.io/DiscordBadgeUnlocker/>** and accept the risk notice.
 2. Pick your badge tiers (**Random**) or your own games (**Custom**), then click **Copy script**.
 3. In the Discord desktop app, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> and open **Console**. Type `allow pasting` if asked, then paste and press Enter.
 
@@ -53,7 +53,7 @@ Discord could use this game data for new features and personalisation in the fut
 > [!NOTE]
 > **Untested as of 11/11/26.** No run of the Streaming script has been checked against a real badge yet.
 
-Open the generator and click the **green button** in the sidebar (on phones, **Open Streaming**). Set the hours, then choose:
+Open the generator and click the **green button** in the sidebar (on phones, the green screen icon at the top). Set the hours, then choose:
 
 - **Turbo:** Auto claims 10h a minute while someone watches. Off claims one minute a minute.
 - **Nobody watching:** Pause (the default) waits for a viewer. Drop keeps sending one minute a minute, which probably counts for nothing.

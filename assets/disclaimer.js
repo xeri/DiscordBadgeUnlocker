@@ -17,6 +17,5 @@ if (gate) {
         if (!accept.checked) return;
         gate.remove();
         for (const el of document.querySelectorAll(".titlebar, .shell")) el.inert = false;
-        document.getElementById("load-generator")?.focus({ preventScroll: true });
     });
 }

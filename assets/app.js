@@ -1,4 +1,4 @@
-// Boot: load Discord's catalog in the background, preload the generator when idle, mount it on click.
+// Boot: load Discord's catalog in the background and open the generator right away (it waits for the catalog).
 
 import { initTips } from "./tips.js";
 
@@ -7,8 +7,6 @@ initTips();
 const SNAPSHOT_URL = new URL("../data/catalog.min.json", import.meta.url).href;
 
 const status = document.getElementById("catalog-status");
-const start = document.getElementById("start");
-const button = document.getElementById("load-generator");
 const mountPoint = document.getElementById("generator");
 
 const fmt = n => n.toLocaleString("en-US");
@@ -62,16 +60,13 @@ catalogPromise.then(
     }
 );
 
-let generatorModule = null;
-const preloadGenerator = () => (generatorModule ??= import("./generator.js"));
-
-const idle = window.requestIdleCallback ?? (cb => setTimeout(cb, 400));
-idle(() => { preloadGenerator().catch(() => { generatorModule = null; }); }, { timeout: 2500 });
-
-// Entering the Danger Zone (assets/zone.js) before the generator is open opens it.
-document.addEventListener("zonechange", event => {
-    if (event.detail?.zone === "danger" && !start.hidden && !button.disabled) button.click();
-});
+import("./generator.js").then(
+    ({ mount }) => mount(mountPoint, { catalogPromise }),
+    error => {
+        mountPoint.textContent = `Couldn't load the generator: ${error.message}`;
+        console.error(error);
+    }
+);
 
 // Streaming (assets/stream.js) has its own panel: loaded the first time, shown only in its zone. It needs no catalog.
 const streamRoot = document.getElementById("stream");
@@ -87,18 +82,3 @@ document.addEventListener("zonechange", event => {
     });
 });
 
-button.addEventListener("click", async () => {
-    button.disabled = true;
-    button.textContent = "Loading…";
-    try {
-        const { mount } = await preloadGenerator();
-        start.hidden = true;
-        mountPoint.hidden = false;
-        mount(mountPoint, { catalogPromise });
-    } catch (error) {
-        generatorModule = null;
-        button.disabled = false;
-        button.textContent = "Load generator";
-        console.error(error);
-    }
-});
