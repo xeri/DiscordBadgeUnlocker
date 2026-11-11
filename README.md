@@ -1,32 +1,23 @@
+<div align="center">
+
+<img src="assets/logo.svg" alt="" width="72" height="72">
+
 # Discord Badge Unlocker
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+Console scripts for Discord's **Game Variety**, **Game Time** and **Streaming** profile badges.
+
+[![Open the generator](https://img.shields.io/badge/Open_the_generator-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://xeri.github.io/DiscordBadgeUnlocker/) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](LICENSE)
+
+<img src="docs/generator.png" alt="The generator in Random mode: Game Variety set to Universalist (110 games), Game Time to Eternal (5,500h), with Download and Copy script" width="820">
+
+</div>
 
 Builds console scripts that unlock Discord's **Game Variety** (100+ games) and **Game Time** (5,000h) profile badges, and stream time for the **Streaming** badge. Pick random games or choose your own, set the hours, then paste the script into Discord's console. Everything runs locally; the page only fetches Discord's public game catalog.
-<img alt="image" src="https://github.com/user-attachments/assets/766afe49-e35d-479d-9f06-c29fbd90d3d0" width="50%" height="50%"/>
-
-
-Why have custom games instead of random? Discord could use this game data for new features and personalisation in the future, 
-
-<img width="25%" height="25%" alt="image" src="https://github.com/user-attachments/assets/477c6c4c-87ac-4ebe-92cc-5bde2c79fe12" />
-
-for example, the "Suggested for you" for some widgets
-
 
 > [!WARNING]
 > **Educational & Research Use Only:** Modifying Discord client internals carries inherent risks. Use responsibly. Review [DISCLAIMER.md](DISCLAIMER.md).
-
-```
-/*
-* Your warranty is now void.
-*
-* I am not responsible for bricked devices, dead SD cards,
-* thermonuclear war, or you getting fired because the alarm app failed. Please
-* do some research if you have any concerns about features included in this tool
-* before using it! YOU are choosing to make these modifications, and if
-* you point the finger at me for getting you banned, I will laugh at you.
-*/
-```
+>
+> *Your warranty is now void. I am not responsible for bricked devices, dead SD cards, thermonuclear war, or you getting fired because the alarm app failed. Please do some research if you have any concerns about features included in this tool before using it! YOU are choosing to make these modifications, and if you point the finger at me for getting you banned, I will laugh at you.*
 
 ## Requirements
 
@@ -35,9 +26,11 @@ for example, the "Suggested for you" for some widgets
 
 ## Getting started
 
-Open **<https://xeri.github.io/DiscordBadgeUnlocker/>** and click **Load generator**.
+1. Open **<https://xeri.github.io/DiscordBadgeUnlocker/>** and click **Load generator**.
+2. Pick your badge tiers (**Random**) or your own games (**Custom**), then click **Copy script**.
+3. In the Discord desktop app, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> and open **Console**. Type `allow pasting` if asked, then paste and press Enter.
 
-To run it locally instead:
+To run the page locally instead:
 
 ```bash
 git clone https://github.com/xeri/DiscordBadgeUnlocker.git
@@ -45,7 +38,15 @@ cd DiscordBadgeUnlocker
 npm start
 ```
 
-Open <http://127.0.0.1:8080/> and click **Load generator**.
+Then open <http://127.0.0.1:8080/>.
+
+## Why custom games instead of random?
+
+Discord could use this game data for new features and personalisation in the future, for example the **Suggested for you** games in profile widgets:
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/477c6c4c-87ac-4ebe-92cc-5bde2c79fe12" alt="Discord's Favourite Game widget, with a Suggested for you row of games" width="435">
+</p>
 
 ## Streaming badge
 
